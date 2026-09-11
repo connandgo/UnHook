@@ -302,3 +302,84 @@ def memory_inject_prompt(request, handler):
         request.system_prompt = "\n\n".join([base, *blocks]) if base else "\n\n".join(blocks)
 
     return handler(request)
+
+
+# ── 조립 (설계서 5절 "미들웨어 조립", AGENTS.md ② 담당) ────────────────
+#
+# 실행 순서 규칙 (실측 확인):
+#   before_agent·before_model : 목록 순서
+#   wrap_model_call           : 목록 순서로 중첩 (앞이 바깥)
+#   after_model·after_agent   : 목록 역순
+#
+# 그래서 목록 순서와 실행 순서가 다르다. 아래 배치는 설계서 3.2·5.1의
+# 순서 요구를 실행 순서 기준으로 만족시킨 결과다.
+
+REPORT_TOOL_NAME = "report_to_authority"
+TOOL_RETRY_ATTEMPTS = 3
+
+
+def build_middleware(
+    *,
+    classifier=None,
+    allowed_contacts=None,
+    external_splitter=None,
+) -> list:
+    """Agent에 넘길 미들웨어를 실행 순서가 맞게 배치해 돌려준다.
+
+    classifier: 인젝션 판별 Runnable. None이면 guards.py 기본값(nano).
+    allowed_contacts: 출력 감사가 허용할 연락처. data/contacts.json 확정 전까지 None.
+    external_splitter: 원문 구간 판별 함수. PII가 사기범 측 정보를 가릴 때 쓴다.
+    """
+    from audit import OutputAuditMiddleware
+    from guards import (
+        ContentIsolationMiddleware,
+        InjectionGuardMiddleware,
+        TopicFilterMiddleware,
+        build_input_middlewares,
+    )
+    from langchain.agents.middleware import (
+        HumanInTheLoopMiddleware,
+        ToolRetryMiddleware,
+    )
+    from pii import PIIMiddleware
+
+    by_type = {type(m).__name__: m for m in build_input_middlewares(classifier=classifier)}
+    topic_filter: TopicFilterMiddleware = by_type["TopicFilterMiddleware"]
+    injection_guard: InjectionGuardMiddleware = by_type["InjectionGuardMiddleware"]
+    content_isolation: ContentIsolationMiddleware = by_type["ContentIsolationMiddleware"]
+
+    return [
+        # 1. 마스킹이 가장 먼저. 인젝션 판별 모델·로그·Checkpointer 모두
+        #    가려진 텍스트만 보게 한다 (설계서 2.1 "보조 모델에도 마스킹된 텍스트만").
+        PIIMiddleware(external_splitter=external_splitter),
+
+        # 2. after_agent 전용. 역순 실행이므로 InjectionGuard보다 목록 앞에 둬야
+        #    보안 결과 보강 뒤에 지급정지 안내가 붙는다 (설계서 608줄).
+        emergency_route_notice,
+
+        # 3. after_model 전용. 역순 실행이므로 DamageState보다 목록 앞에 둬야
+        #    갱신된 피해 단계를 기준으로 응답을 검사한다 (설계서 3.2 실행 순서 근거).
+        OutputAuditMiddleware(allowed_contacts=allowed_contacts),
+
+        # 4~5. 입력 가드. 마스킹 뒤에 온다.
+        topic_filter,
+        injection_guard,
+
+        # 6~7. 긴급 판정과 이력 대조. 이력 대조는 pii_vault가 채워진 뒤라야 한다.
+        emergency_route_detect,
+        memory_inject_lookup,
+
+        # 8. 피해 상태 갱신. after_model 중 가장 먼저 실행된다.
+        damage_state_middleware,
+
+        # 9~11. 모델 호출 감싸기. ContentIsolation은 프롬프트를 더하는 wrapper보다
+        #       안쪽이어야 한다 (설계서 609줄).
+        emergency_route_restrict,
+        memory_inject_prompt,
+        content_isolation,
+
+        # 12~13. Tool 호출 감싸기. 승인이 재시도보다 바깥이라 거절된 호출은
+        #        재시도되지 않는다.
+        HumanInTheLoopMiddleware(interrupt_on={REPORT_TOOL_NAME: True}),
+        ToolRetryMiddleware(max_retries=TOOL_RETRY_ATTEMPTS),
+    ]
