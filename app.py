@@ -41,6 +41,26 @@ THINKING_HTML = (
     "<div class='uh-thinking-text'>" + "".join(f"<span>{t}</span>" for t in THINKING_STEPS) + "</div></div>"
     "<div class='uh-skeleton'><i style='width:38%'></i><i style='width:92%'></i><i style='width:80%'></i></div>"
 )
+# 사이드바 로고: 아바타와 같은 하늘색 유리 질감의 낚싯바늘 (배경 없음).
+LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<defs>
+<linearGradient id="lk" x1="0" y1="0" x2="0.35" y2="1">
+<stop offset="0" stop-color="#9ED8FF"/><stop offset="0.4" stop-color="#3DB0F7"/>
+<stop offset="0.75" stop-color="#1E9DF1"/><stop offset="1" stop-color="#1279CC"/></linearGradient>
+<filter id="ls" x="-30%" y="-30%" width="160%" height="160%">
+<feDropShadow dx="0" dy="3" stdDeviation="2.5" flood-color="#1E9DF1" flood-opacity="0.45"/></filter>
+</defs>
+<g fill="none" stroke-linecap="round" stroke-linejoin="round" filter="url(#ls)">
+<g stroke="url(#lk)" stroke-width="7.5">
+<circle cx="40" cy="12.5" r="4.5"/>
+<path d="M40 17.5V36a11 11 0 0 1-22 0v-7"/>
+</g>
+<path d="M18 30l6.5 4" stroke="url(#lk)" stroke-width="6"/>
+<g stroke="#fff" stroke-opacity="0.55" stroke-width="2" transform="translate(-1.4 -1.6)">
+<path d="M40 17.5V36a11 11 0 0 1-22 0v-4"/>
+<circle cx="40" cy="12.5" r="4.5"/>
+</g>
+</g></svg>"""
 DEFAULT_USER_ID = "demo-user"
 DEFAULT_AGE_GROUP = "general"
 # 어시스턴트 아바타: 하늘색 유리구슬 얼굴. 테마 primary(#1E9DF1) 계열 그라데이션.
@@ -216,8 +236,7 @@ def inject_theme_css() -> None:
 
         /* ── 사이드바: 로고 + 사건 기록 ── */
         .uh-brand { display: flex; align-items: center; gap: 0.75rem; padding: 0.25rem 0 0.9rem; }
-        .uh-brand-face { flex: none; width: 2.6rem; height: 2.6rem;
-          filter: drop-shadow(0 4px 8px color-mix(in srgb, var(--uh-primary) 35%, transparent)); }
+        .uh-brand-face { flex: none; width: 2.8rem; height: 2.8rem; }
         .uh-brand-name { font-size: 1.35rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; }
         .uh-brand-sub { color: var(--uh-muted-fg); font-size: 0.78rem; margin-top: 0.15rem; }
         [data-testid="stSidebar"] .uh-section {
@@ -520,7 +539,7 @@ snapshot = StateSnapshot.model_validate(st.session_state.snapshot)
 
 with st.sidebar:
     st.markdown(
-        f"<div class='uh-brand'><div class='uh-brand-face'>{ASSISTANT_AVATAR}</div>"
+        f"<div class='uh-brand'><div class='uh-brand-face'>{LOGO_SVG}</div>"
         "<div><div class='uh-brand-name'>Un Hook</div>"
         "<div class='uh-brand-sub'>금융사기 피해 상태 확인·대응 안내</div></div></div>",
         unsafe_allow_html=True,
