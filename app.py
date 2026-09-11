@@ -20,15 +20,72 @@ RISK_ICON = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"
 RISK_LABEL = {
     "critical": "매우 위험", "high": "위험", "medium": "주의", "low": "낮음", "insufficient_info": "정보 부족",
 }
+# 위험도 색은 디자인 토큰의 chart/destructive 색을 쓴다 (.streamlit/config.toml과 같은 팔레트).
 RISK_COLOR = {
-    "critical": "#d32f2f", "high": "#ef6c00", "medium": "#f9a825", "low": "#2e7d32", "insufficient_info": "#757575",
+    "critical": "#F4212E", "high": "#E0245E", "medium": "#F7B928", "low": "#00B87A", "insufficient_info": "#72767A",
 }
+RISK_TEXT = {"medium": "#0F1419"}  # 노란 배경은 흰 글자가 안 보여 어두운 글자를 쓴다.
 STAGE_STEPS = [
     ("none", "피해 없음"), ("link_clicked", "링크 클릭"), ("info_exposed", "정보 노출"),
     ("app_installed", "앱 설치"), ("money_sent", "송금"),
 ]
 DEFAULT_USER_ID = "demo-user"
 DEFAULT_AGE_GROUP = "general"
+
+
+def inject_theme_css() -> None:
+    """config.toml이 못 미치는 세부(채팅 말풍선·폼·확장 패널)를 같은 팔레트로 맞춘다.
+
+    Streamlit이 .stApp에 color-scheme을 붙이므로 light-dark()로 라이트·다크 값을 고르면
+    테마를 바꿔도 스크립트 재실행 없이 바로 따라간다.
+    """
+    st.markdown(
+        """
+        <style>
+        :root {
+          --uh-card: light-dark(#F7F8F8, #17181C);
+          --uh-border: light-dark(#E1EAEF, #242628);
+          --uh-primary: light-dark(#1E9DF1, #1C9CF0);
+          --uh-accent: light-dark(#E3ECF6, #061622);
+          --uh-muted-fg: #72767A;
+          --uh-radius: 1.3rem;
+        }
+        [data-testid="stChatMessage"] {
+          background: var(--uh-card);
+          border: 1px solid var(--uh-border);
+          border-radius: var(--uh-radius);
+          padding: 1rem 1.25rem;
+        }
+        [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+          background: var(--uh-accent);
+          border-color: transparent;
+        }
+        [data-testid="stForm"] {
+          background: var(--uh-card);
+          border: 1px solid var(--uh-border);
+          border-radius: var(--uh-radius);
+          padding: 1.25rem 1.25rem 1rem;
+        }
+        [data-testid="stExpander"] details {
+          border-radius: calc(var(--uh-radius) - 4px);
+          border-color: var(--uh-border);
+        }
+        .uh-risk-card {
+          border-radius: var(--uh-radius);
+          padding: 16px 18px;
+          margin-bottom: 14px;
+        }
+        .uh-risk-card .uh-risk-label { font-size: 0.8rem; opacity: 0.85; }
+        .uh-risk-card .uh-risk-value { font-size: 1.6rem; font-weight: 700; line-height: 1.2; }
+        .uh-stages { line-height: 1.9; margin-bottom: 12px; }
+        .uh-stage-done, .uh-stage-todo, .uh-unknown { color: var(--uh-muted-fg); }
+        .uh-stage-todo { opacity: 0.7; }
+        .uh-section { color: var(--uh-muted-fg); font-size: 0.78rem; font-weight: 600;
+          letter-spacing: 0.04em; text-transform: uppercase; margin: 10px 0 4px; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 @st.cache_resource(show_spinner="Agent를 준비하는 중...")
@@ -166,14 +223,17 @@ st.set_page_config(page_title="Un Hook", page_icon="🪝", layout="wide")
 if "thread_id" not in st.session_state:
     reset_conversation()
 
+inject_theme_css()
+
 def render_state_panel(snap: StateSnapshot) -> None:
     """현재 피해 상태를 한눈에 보이게 그린다."""
-    color = RISK_COLOR.get(snap.risk_level, "#757575")
+    color = RISK_COLOR.get(snap.risk_level, RISK_COLOR["insufficient_info"])
+    text = RISK_TEXT.get(snap.risk_level, "#FFFFFF")
     st.markdown(
         f"""
-        <div style="background:{color};color:#fff;border-radius:10px;padding:14px 16px;margin-bottom:12px;">
-          <div style="font-size:0.8rem;opacity:0.85;">현재 위험도</div>
-          <div style="font-size:1.6rem;font-weight:700;line-height:1.2;">
+        <div class="uh-risk-card" style="background:{color};color:{text};">
+          <div class="uh-risk-label">현재 위험도</div>
+          <div class="uh-risk-value">
             {RISK_ICON.get(snap.risk_level, "⚪")} {RISK_LABEL.get(snap.risk_level, snap.risk_level)}
           </div>
         </div>
@@ -181,22 +241,19 @@ def render_state_panel(snap: StateSnapshot) -> None:
         unsafe_allow_html=True,
     )
 
-    st.markdown("**피해 단계**")
+    st.markdown("<div class='uh-section'>피해 단계</div>", unsafe_allow_html=True)
     current = next((i for i, (key, _) in enumerate(STAGE_STEPS) if key == snap.damage_stage), 0)
     rows = []
     for i, (_, label) in enumerate(STAGE_STEPS):
         if i == current:
             rows.append(f"<div style='font-weight:700;color:{color};'>▶ {label}</div>")
         elif i < current:
-            rows.append(f"<div style='color:#9e9e9e;'>✓ {label}</div>")
+            rows.append(f"<div class='uh-stage-done'>✓ {label}</div>")
         else:
-            rows.append(f"<div style='color:#bdbdbd;'>○ {label}</div>")
-    st.markdown(
-        "<div style='line-height:1.9;margin-bottom:12px;'>" + "".join(rows) + "</div>",
-        unsafe_allow_html=True,
-    )
+            rows.append(f"<div class='uh-stage-todo'>○ {label}</div>")
+    st.markdown("<div class='uh-stages'>" + "".join(rows) + "</div>", unsafe_allow_html=True)
 
-    st.markdown("**확인된 사실**")
+    st.markdown("<div class='uh-section'>확인된 사실</div>", unsafe_allow_html=True)
     flags = [
         ("링크 클릭", snap.link_clicked),
         ("앱 설치", snap.app_installed),
@@ -208,7 +265,7 @@ def render_state_panel(snap: StateSnapshot) -> None:
         elif value is False:
             st.markdown(f"🟢 {label} 없음")
         else:
-            st.markdown(f"<span style='color:#9e9e9e;'>➖ {label} 미확인</span>", unsafe_allow_html=True)
+            st.markdown(f"<span class='uh-unknown'>➖ {label} 미확인</span>", unsafe_allow_html=True)
     if snap.info_exposed:
         st.markdown("🔴 노출 정보: **" + ", ".join(snap.info_exposed) + "**")
     if snap.sent_amount:
@@ -217,7 +274,7 @@ def render_state_panel(snap: StateSnapshot) -> None:
         st.markdown(f"⏱ 송금 후 **{snap.elapsed_minutes}분** 경과")
 
     if snap.checklist:
-        st.markdown("**대응 체크리스트**")
+        st.markdown("<div class='uh-section'>대응 체크리스트</div>", unsafe_allow_html=True)
         done = sum(1 for v in snap.checklist.values() if v)
         st.progress(done / len(snap.checklist), text=f"{done}/{len(snap.checklist)} 완료")
         for key, ok in snap.checklist.items():
@@ -272,10 +329,11 @@ if submitted:
 # 신고 접수(HITL): 사용자가 버튼을 눌러야만 report_approved=True로 Tool이 모델에 제공된다.
 if st.session_state.history and not st.session_state.report_done:
     st.divider()
-    col1, col2 = st.columns([3, 1])
-    col1.markdown("**신고 접수** — 버튼을 누르기 전에는 신고 Tool이 실행되지 않습니다.")
-    if col2.button("신고 접수 승인", type="secondary", use_container_width=True):
-        run_turn(REPORT_APPROVAL_STATEMENT, "", report_approved=True)
-        st.rerun()
+    with st.container(border=True):
+        col1, col2 = st.columns([3, 1], vertical_alignment="center")
+        col1.markdown("**신고 접수** — 버튼을 누르기 전에는 신고 Tool이 실행되지 않습니다.")
+        if col2.button("신고 접수 승인", type="secondary", use_container_width=True):
+            run_turn(REPORT_APPROVAL_STATEMENT, "", report_approved=True)
+            st.rerun()
 elif st.session_state.report_done:
     st.success("신고 접수가 완료되었습니다. 접수 결과는 위 실행 정보에서 확인하세요.")
