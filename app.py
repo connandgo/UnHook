@@ -43,8 +43,23 @@ THINKING_HTML = (
 )
 DEFAULT_USER_ID = "demo-user"
 DEFAULT_AGE_GROUP = "general"
-# 어시스턴트 아바타: Material 심볼의 낚싯바늘. 정렬·굵기가 일정하고 색은 CSS에서 입힌다.
-ASSISTANT_AVATAR = ":material/phishing:"
+# 어시스턴트 아바타: 하늘색 유리구슬 얼굴. 테마 primary(#1E9DF1) 계열 그라데이션.
+ASSISTANT_AVATAR = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<defs>
+<radialGradient id="b" cx="42%" cy="34%" r="64%">
+<stop offset="0" stop-color="#9ED8FF"/><stop offset="0.45" stop-color="#3DB0F7"/>
+<stop offset="0.8" stop-color="#1E9DF1"/><stop offset="1" stop-color="#1279CC"/></radialGradient>
+<radialGradient id="g" cx="50%" cy="100%" r="55%">
+<stop offset="0" stop-color="#B9F3FF" stop-opacity="0.95"/><stop offset="0.7" stop-color="#B9F3FF" stop-opacity="0"/></radialGradient>
+<radialGradient id="h" cx="50%" cy="50%" r="50%">
+<stop offset="0" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>
+</defs>
+<circle cx="32" cy="32" r="30" fill="url(#b)"/>
+<circle cx="32" cy="32" r="30" fill="url(#g)"/>
+<ellipse cx="27" cy="15" rx="15" ry="9" fill="url(#h)"/>
+<rect x="23.5" y="25" width="5" height="14" rx="2.5" fill="#fff"/>
+<rect x="35.5" y="25" width="5" height="14" rx="2.5" fill="#fff"/>
+</svg>"""
 
 
 def inject_theme_css() -> None:
@@ -124,12 +139,12 @@ def inject_theme_css() -> None:
         }
         [data-testid="stChatMessageAvatarUser"] { background: var(--uh-muted) !important; color: var(--uh-fg) !important; }
         [data-testid="stChatMessageAvatarCustom"] {
-          width: 2rem; height: 2rem; border-radius: 50%; border: none;
-          background: var(--uh-primary); display: grid; place-items: center;
+          width: 2.1rem; height: 2.1rem; border-radius: 50%; border: none; background: transparent; padding: 0;
+          filter: drop-shadow(0 3px 5px color-mix(in srgb, var(--uh-primary) 35%, transparent));
         }
-        [data-testid="stChatMessageAvatarCustom"] [data-testid="stIconMaterial"] {
-          color: #fff !important; font-size: 1.25rem; font-variation-settings: "wght" 500;
-        }
+        [data-testid="stChatMessageAvatarCustom"] img { width: 100%; height: 100%; object-fit: contain; }
+        .uh-hero-face { width: 4.5rem; height: 4.5rem; margin-bottom: 1rem;
+          filter: drop-shadow(0 8px 14px color-mix(in srgb, var(--uh-primary) 35%, transparent)); }
         .uh-quote {
           margin-top: 0.6rem; padding: 0.6rem 0.85rem;
           background: light-dark(rgba(255,255,255,0.7), rgba(255,255,255,0.05));
@@ -527,7 +542,7 @@ if st.session_state.history:
     render_case_strip(snapshot)
 else:
     st.markdown(
-        "<div class='uh-hero'><h1>무슨 일이 있었나요?</h1>"
+        f"<div class='uh-hero'><div class='uh-hero-face'>{ASSISTANT_AVATAR}</div><h1>무슨 일이 있었나요?</h1>"
         "<p>의심스러운 문자나 전화를 받았다면 지금 상황을 편하게 말해 주세요. "
         "얼마나 위험한지, 지금 당장 무엇을 해야 하는지 알려드립니다. "
         "받은 문자가 있으면 아래 <b>📎 받은 문자 붙여넣기</b>로 원문도 함께 보내 주세요.</p>"
