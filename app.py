@@ -34,6 +34,13 @@ STAGE_STEPS = [
     ("app_installed", "앱 설치"), ("money_sent", "송금"),
 ]
 QUICK_STARTS = ["택배 문자 링크를 눌렀어요", "앱을 설치하라고 해요", "이미 돈을 보냈어요"]
+# 분석 중 말풍선. 모델 호출은 스트리밍이 아니라 단계 문구를 CSS로 순환시킨다.
+THINKING_STEPS = ["상황을 읽고 있어요", "링크와 번호를 조회하고 있어요", "대응 절차를 찾고 있어요", "답변을 정리하고 있어요"]
+THINKING_HTML = (
+    "<div class='uh-thinking'><div class='uh-dots'><span></span><span></span><span></span></div>"
+    "<div class='uh-thinking-text'>" + "".join(f"<span>{t}</span>" for t in THINKING_STEPS) + "</div></div>"
+    "<div class='uh-skeleton'><i style='width:38%'></i><i style='width:92%'></i><i style='width:80%'></i></div>"
+)
 DEFAULT_USER_ID = "demo-user"
 DEFAULT_AGE_GROUP = "general"
 # 어시스턴트 아바타: Material 심볼의 낚싯바늘. 정렬·굵기가 일정하고 색은 CSS에서 입힌다.
@@ -180,6 +187,37 @@ def inject_theme_css() -> None:
         .uh-check { display: flex; gap: 0.5rem; align-items: center; padding: 0.2rem 0; font-size: 0.9rem; }
         .uh-check.done { color: var(--uh-muted-fg); text-decoration: line-through; }
 
+        /* ── 분석 중 표시 ── */
+        .uh-thinking { display: flex; align-items: center; gap: 0.7rem; min-height: 2rem; color: var(--uh-muted-fg); font-size: 0.95rem; }
+        .uh-dots { display: inline-flex; gap: 0.28rem; }
+        .uh-dots span { width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--uh-primary); opacity: 0.35; }
+        .uh-thinking-text { position: relative; height: 1.4rem; flex: 1; }
+        .uh-thinking-text span { position: absolute; left: 0; top: 0; line-height: 1.4rem; opacity: 0; white-space: nowrap; }
+        .uh-thinking-text span:first-child { opacity: 1; }
+        .uh-skeleton { display: flex; flex-direction: column; gap: 0.55rem; margin-top: 0.9rem; }
+        .uh-skeleton i {
+          display: block; height: 0.85rem; border-radius: 999px;
+          background: linear-gradient(90deg, var(--uh-card) 25%, var(--uh-muted) 50%, var(--uh-card) 75%);
+          background-size: 200% 100%;
+        }
+        @media (prefers-reduced-motion: no-preference) {
+          .uh-dots span { animation: uh-dot 1.2s ease-in-out infinite; }
+          .uh-dots span:nth-child(2) { animation-delay: 0.15s; }
+          .uh-dots span:nth-child(3) { animation-delay: 0.3s; }
+          @keyframes uh-dot { 0%, 80%, 100% { opacity: 0.35; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+          .uh-thinking-text span { animation: uh-cycle 12s linear infinite; }
+          .uh-thinking-text span:first-child { opacity: 0; }
+          .uh-thinking-text span:nth-child(2) { animation-delay: 3s; }
+          .uh-thinking-text span:nth-child(3) { animation-delay: 6s; }
+          .uh-thinking-text span:nth-child(4) { animation-delay: 9s; }
+          @keyframes uh-cycle {
+            0% { opacity: 0; transform: translateY(4px); } 3% { opacity: 1; transform: none; }
+            22% { opacity: 1; transform: none; } 25%, 100% { opacity: 0; transform: translateY(-4px); }
+          }
+          .uh-skeleton i { animation: uh-shimmer 1.6s linear infinite; }
+          @keyframes uh-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+        }
+
         /* ── 하단 입력 줄 ── */
         [data-testid="stBottom"] > div { background: transparent; }
         [data-testid="stChatInput"] { border-radius: var(--uh-radius); }
@@ -222,6 +260,7 @@ def reset_conversation() -> None:
     st.session_state.history = []          # [{"role": "user"|"assistant", ...}]
     st.session_state.seen_tool_events = set()
     st.session_state.report_done = False
+    st.session_state.pending_turn = None   # 화면에는 올렸지만 아직 모델 호출 전인 턴
 
 
 def thread_messages(agent: Any, thread_id: str) -> list[Any]:
@@ -258,7 +297,15 @@ def collect_tool_activity(raw_state: dict[str, Any], seen: set[str]) -> list[str
     return lines
 
 
-def run_turn(statement: str, quoted: str, *, report_approved: bool = False) -> None:
+def queue_turn(statement: str, quoted: str, *, report_approved: bool = False) -> None:
+    """사용자 메시지를 먼저 화면에 올리고, 모델 호출은 다음 실행(complete_turn)으로 넘긴다."""
+    st.session_state.history.append({"role": "user", "statement": statement, "quoted": quoted})
+    st.session_state.pending_turn = {"statement": statement, "quoted": quoted, "report_approved": report_approved}
+    st.session_state.clear_quoted_draft = True
+    st.rerun()
+
+
+def complete_turn(statement: str, quoted: str, *, report_approved: bool = False) -> None:
     agent = get_agent()
     turn = AgentTurnInput(
         thread_id=st.session_state.thread_id,
@@ -271,10 +318,8 @@ def run_turn(statement: str, quoted: str, *, report_approved: bool = False) -> N
         conversation_turns=st.session_state.turn_count,
         report_approved=report_approved,
     )
-    st.session_state.history.append({"role": "user", "statement": statement, "quoted": quoted})
     try:
-        with st.spinner("분석 중..."):
-            result: AgentRunResult = agent.invoke(turn)
+        result: AgentRunResult = agent.invoke(turn)
     except Exception as exc:  # 시연 화면이므로 오류를 대화에 그대로 보여준다.
         detail = f"{type(exc).__name__}: {exc}"
         if type(exc).__name__ == "LengthFinishReasonError":
@@ -416,13 +461,13 @@ with st.sidebar:
     render_case_file(snapshot)
 
     # 신고 접수(HITL): 사용자가 버튼을 눌러야만 report_approved=True로 Tool이 모델에 제공된다.
-    if st.session_state.history and not st.session_state.report_done:
+    has_answer = any(e["role"] == "assistant" for e in st.session_state.history)
+    if has_answer and not st.session_state.get("pending_turn") and not st.session_state.report_done:
         st.markdown("<div class='uh-section'>신고</div>", unsafe_allow_html=True)
         with st.container(border=True):
             st.markdown("지금까지 확인된 내용으로 신고를 접수할 수 있어요. 버튼을 누르기 전에는 접수되지 않습니다.")
             if st.button("신고 접수하기", type="primary", width="stretch"):
-                run_turn(REPORT_APPROVAL_STATEMENT, "", report_approved=True)
-                st.rerun()
+                queue_turn(REPORT_APPROVAL_STATEMENT, "", report_approved=True)
     elif st.session_state.report_done:
         st.success("신고가 접수되었습니다. 접수 결과는 답변의 '왜 이렇게 판단했나요?'에서 확인하세요.")
     st.caption(f"{st.session_state.turn_count}턴 · `{st.session_state.thread_id}`")
@@ -463,8 +508,11 @@ for entry in st.session_state.history:
         with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
             st.error(f"답변을 만들지 못했습니다. {entry['text']}")
 
+pending = st.session_state.get("pending_turn")
+
 # 하단 고정 입력 줄: 문자 원문 첨부(팝오버) + 채팅 입력.
 # 사용자 진술과 외부 원문을 분리해 넘기기 위해 원문은 별도 칸에 받는다 (AGENTS.md 입력 보안 연결).
+# 분석 중에는 입력을 잠그므로, 모델 호출(아래)보다 먼저 그린다.
 with st.bottom:
     attach_col, hint_col = st.columns([1.2, 2.8], vertical_alignment="center")
     has_draft = bool(st.session_state.get("quoted_draft", "").strip())
@@ -476,10 +524,19 @@ with st.bottom:
         st.caption("전화번호·계좌번호 같은 개인정보는 보내기 전에 자동으로 가려집니다.")
     if has_draft:
         hint_col.markdown("<span class='uh-quiet'>첨부한 원문은 다음 메시지와 함께 전송됩니다.</span>", unsafe_allow_html=True)
-    statement = st.chat_input("지금 상황을 말해 주세요 (예: 링크는 눌렀는데 송금은 안 했어요)")
+    statement = st.chat_input(
+        "분석이 끝나면 이어서 말할 수 있어요" if pending else "지금 상황을 말해 주세요 (예: 링크는 눌렀는데 송금은 안 했어요)",
+        disabled=bool(pending),
+    )
+
+# 직전 실행에서 올린 사용자 메시지에 대한 답변을 만든다. 그동안 어시스턴트 자리에 진행 상태를 보여준다.
+if pending:
+    with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
+        st.markdown(THINKING_HTML, unsafe_allow_html=True)
+        complete_turn(pending["statement"], pending["quoted"], report_approved=pending["report_approved"])
+    st.session_state.pending_turn = None
+    st.rerun()
 
 statement = (statement or quick_pick or "").strip()
 if statement:
-    run_turn(statement, st.session_state.get("quoted_draft", "").strip())
-    st.session_state.clear_quoted_draft = True
-    st.rerun()
+    queue_turn(statement, st.session_state.get("quoted_draft", "").strip())
