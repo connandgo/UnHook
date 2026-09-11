@@ -5,8 +5,10 @@ assigns the derivation of `damage_stage` / `risk_level` and the prevention of
 regression to `DamageStateMiddleware`.
 """
 
+import json
 import logging
 import re
+from functools import lru_cache
 
 from langchain.agents.middleware import (
     after_agent,
@@ -14,7 +16,7 @@ from langchain.agents.middleware import (
     before_agent,
     wrap_model_call,
 )
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 
 import memory
 from pii import restore_tokens
@@ -85,6 +87,49 @@ def escalate_risk(*levels: RiskLevel) -> RiskLevel:
     return max(levels, key=lambda level: RISK_ORDER[level])
 
 
+STEP_SEPARATOR = " — "
+PLAYBOOK_TOOL_NAME = "get_scam_playbook"
+
+
+@lru_cache(maxsize=1)
+def _step_order() -> dict[str, list[str]]:
+    """단계별 정규 조치 순서. rag.py와 같은 파일을 읽어 키가 어긋나지 않게 한다."""
+    from rag import PLAYBOOK_FALLBACK_PATH
+
+    return json.loads(PLAYBOOK_FALLBACK_PATH.read_text(encoding="utf-8"))["step_order"]
+
+
+def _playbook_steps(messages: list) -> list[str] | None:
+    """가장 최근 get_scam_playbook 결과의 steps. 없으면 None."""
+    for message in reversed(messages or []):
+        if not isinstance(message, ToolMessage):
+            continue
+        if getattr(message, "name", None) != PLAYBOOK_TOOL_NAME:
+            continue
+        content = message.content
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except ValueError:
+                return None
+        steps = content.get("steps") if isinstance(content, dict) else None
+        return steps or None
+    return None
+
+
+def build_checklist(damage_stage: DamageStage, playbook_steps: list[str] | None) -> dict[str, bool]:
+    """조치 목록을 만든다.
+
+    steps 각 항목은 `"<step_key> — <설명>"` 형식이고 앞부분이 checklist 키다
+    (설계서 2.5 출력 형식). Tool 결과가 없으면 로컬 JSON의 단계별 순서를 쓴다.
+    """
+    if playbook_steps:
+        keys = [step.split(STEP_SEPARATOR, 1)[0].strip() for step in playbook_steps]
+    else:
+        keys = _step_order().get(damage_stage, [])
+    return {key: False for key in keys if key}
+
+
 def apply_checklist_done(checklist: dict[str, bool], done: list[str] | None) -> dict[str, bool]:
     """사용자가 완료했다고 말한 항목만 True로 바꾼다. 없는 항목은 만들지 않는다.
 
@@ -140,8 +185,13 @@ def damage_state_middleware(state: UnHookState, runtime) -> dict | None:
         if value is not None:
             update[field] = value
 
-    checklist = apply_checklist_done(state.get("checklist") or {}, flags.checklist_done)
-    if checklist != (state.get("checklist") or {}):
+    current = state.get("checklist") or {}
+    checklist = current
+    # 송금 피해가 처음 확인될 때 조치 목록을 만든다 (설계서 3.1 checklist).
+    if stage == "money_sent" and not current:
+        checklist = build_checklist(stage, _playbook_steps(state.get("messages")))
+    checklist = apply_checklist_done(checklist, flags.checklist_done)
+    if checklist != current:
         update["checklist"] = checklist
 
     return update
@@ -318,6 +368,15 @@ REPORT_TOOL_NAME = "report_to_authority"
 TOOL_RETRY_ATTEMPTS = 3
 
 
+@lru_cache(maxsize=1)
+def contact_labels() -> tuple[str, ...]:
+    """출력 감사가 허용할 연락처. get_scam_playbook이 내보내는 label과 같은 출처다."""
+    from rag import CONTACTS_PATH
+
+    data = json.loads(CONTACTS_PATH.read_text(encoding="utf-8"))
+    return tuple(a["label"] for a in data.get("agencies", []) if a.get("label"))
+
+
 def build_middleware(
     *,
     classifier=None,
@@ -327,7 +386,7 @@ def build_middleware(
     """Agent에 넘길 미들웨어를 실행 순서가 맞게 배치해 돌려준다.
 
     classifier: 인젝션 판별 Runnable. None이면 guards.py 기본값(nano).
-    allowed_contacts: 출력 감사가 허용할 연락처. data/contacts.json 확정 전까지 None.
+    allowed_contacts: 출력 감사가 허용할 연락처. None이면 data/contacts.json의 label.
     external_splitter: 원문 구간 판별 함수. PII가 사기범 측 정보를 가릴 때 쓴다.
     """
     from audit import OutputAuditMiddleware
@@ -359,7 +418,9 @@ def build_middleware(
 
         # 3. after_model 전용. 역순 실행이므로 DamageState보다 목록 앞에 둬야
         #    갱신된 피해 단계를 기준으로 응답을 검사한다 (설계서 3.2 실행 순서 근거).
-        OutputAuditMiddleware(allowed_contacts=allowed_contacts),
+        OutputAuditMiddleware(
+            allowed_contacts=contact_labels() if allowed_contacts is None else allowed_contacts
+        ),
 
         # 4~5. 입력 가드. 마스킹 뒤에 온다.
         topic_filter,
