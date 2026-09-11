@@ -437,3 +437,20 @@ def build_middleware(*, classifier=None, allowed_contacts=None) -> list:
         HumanInTheLoopMiddleware(interrupt_on={REPORT_TOOL_NAME: True}),
         ToolRetryMiddleware(max_retries=TOOL_RETRY_ATTEMPTS),
     ]
+
+
+def build_checkpointer():
+    """대화별 State 저장·복원. 없으면 멀티턴과 승인 재개가 동작하지 않는다.
+
+    Colab 단일 세션 기준이라 인메모리를 쓴다 (설계서 1.5). 세션이 끝나면 사라진다.
+    """
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    return InMemorySaver()
+
+
+def build_store():
+    """대화 간 공유하는 과거 신고 이력 보관. 없으면 TS-05 재방문 경고가 빠진다."""
+    from langgraph.store.memory import InMemoryStore
+
+    return InMemoryStore()
