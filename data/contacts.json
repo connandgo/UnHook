@@ -1,0 +1,33 @@
+{
+  "_note": "get_scam_playbook 연락처 테이블. 문서와 폴백 JSON은 id로 참조하고, PlaybookResult.contacts에는 label만 내보낸다. 대표번호는 시연 전 각 기관 공식 홈페이지에서 재확인한다.",
+  "agencies": [
+    {"id": "police_112", "label": "경찰청 112", "phone": "112", "role": "보이스피싱 통합신고(신고·지급정지 요청·악성앱 상담), 24시간", "url": "https://counterscam112.go.kr"},
+    {"id": "fss_1332", "label": "금융감독원 1332", "phone": "1332", "role": "보이스피싱 피해 상담, 지급정지·피해구제 안내, 개인정보노출자 등록 안내", "url": "https://www.fss.or.kr"},
+    {"id": "kisa_118", "label": "KISA 118", "phone": "118", "role": "스미싱·악성앱·해킹 상담, 24시간", "url": "https://www.boho.or.kr"},
+    {"id": "prosecution_1301", "label": "검찰청 1301", "phone": "1301", "role": "검찰 사칭 여부 확인, 사건 문의"},
+    {"id": "police_182", "label": "경찰 민원 182", "phone": "182", "role": "경찰 사칭 여부 확인, 담당 경찰서 연결"},
+    {"id": "bank_callcenter", "label": "송금한 은행 콜센터", "phone": null, "role": "지급정지 요청. 아래 banks 표에서 해당 은행 번호를 찾아 안내한다"},
+    {"id": "carrier_center", "label": "통신사 고객센터(SKT 114 · KT 100 · LG U+ 101)", "phone": null, "role": "소액결제 차단, 명의도용 개통 확인"}
+  ],
+  "sites": [
+    {"id": "fss_pd", "label": "개인정보노출자 사고예방시스템 pd.fss.or.kr", "url": "https://pd.fss.or.kr", "role": "개인정보 노출 사실 등록 → 금융회사가 신규 계좌 개설·카드 발급 시 본인 확인 강화"},
+    {"id": "payinfo", "label": "계좌정보통합관리서비스 payinfo.or.kr", "url": "https://www.payinfo.or.kr", "role": "내 명의 계좌·대출 일괄 조회, 모르는 계좌 확인"},
+    {"id": "msafer", "label": "명의도용방지서비스 msafer.or.kr", "url": "https://www.msafer.or.kr", "role": "내 명의 휴대폰 개통 현황 조회 및 신규 개통 차단"},
+    {"id": "ecrm", "label": "경찰청 사이버범죄 신고시스템 ecrm.police.go.kr", "url": "https://ecrm.police.go.kr", "role": "스미싱·메신저피싱 등 사이버범죄 온라인 신고"},
+    {"id": "fine", "label": "금융소비자정보포털 파인 fine.fss.or.kr", "url": "https://fine.fss.or.kr", "role": "제도권 금융회사·등록 대부업체 조회"}
+  ],
+  "banks": [
+    {"name": "KB국민은행", "phone": "1588-9999"},
+    {"name": "신한은행", "phone": "1577-8000"},
+    {"name": "우리은행", "phone": "1588-5000"},
+    {"name": "하나은행", "phone": "1599-1111"},
+    {"name": "NH농협은행", "phone": "1661-3000"},
+    {"name": "IBK기업은행", "phone": "1566-2566"},
+    {"name": "카카오뱅크", "phone": "1599-3333"},
+    {"name": "토스뱅크", "phone": "1661-7654"},
+    {"name": "케이뱅크", "phone": "1522-1000"},
+    {"name": "우체국", "phone": "1588-1900"},
+    {"name": "새마을금고", "phone": "1599-9000"},
+    {"name": "신협", "phone": "1566-6000"}
+  ]
+}
