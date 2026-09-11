@@ -214,7 +214,12 @@ def inject_theme_css() -> None:
           font-family: var(--font-mono, Menlo, monospace); font-size: 0.76rem; line-height: 1.5; word-break: break-all;
         }
 
-        /* ── 사이드바: 사건 기록 ── */
+        /* ── 사이드바: 로고 + 사건 기록 ── */
+        .uh-brand { display: flex; align-items: center; gap: 0.75rem; padding: 0.25rem 0 0.9rem; }
+        .uh-brand-face { flex: none; width: 2.6rem; height: 2.6rem;
+          filter: drop-shadow(0 4px 8px color-mix(in srgb, var(--uh-primary) 35%, transparent)); }
+        .uh-brand-name { font-size: 1.35rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; }
+        .uh-brand-sub { color: var(--uh-muted-fg); font-size: 0.78rem; margin-top: 0.15rem; }
         [data-testid="stSidebar"] .uh-section {
           color: var(--uh-muted-fg); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em;
           text-transform: uppercase; margin: 1.1rem 0 0.4rem;
@@ -514,8 +519,12 @@ def render_case_file(snap: StateSnapshot) -> None:
 snapshot = StateSnapshot.model_validate(st.session_state.snapshot)
 
 with st.sidebar:
-    st.title("🪝 Un Hook")
-    st.caption("금융사기 피해 상태 확인·대응 안내 Agent")
+    st.markdown(
+        f"<div class='uh-brand'><div class='uh-brand-face'>{ASSISTANT_AVATAR}</div>"
+        "<div><div class='uh-brand-name'>Un Hook</div>"
+        "<div class='uh-brand-sub'>금융사기 피해 상태 확인·대응 안내</div></div></div>",
+        unsafe_allow_html=True,
+    )
     if st.button("새 상담 시작", width="stretch"):
         reset_conversation()
         st.rerun()
