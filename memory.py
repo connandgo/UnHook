@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from typing import Any, TypedDict
 
@@ -22,7 +23,19 @@ MAX_HISTORY_RECORDS = 5
 
 # 설계서 3.2 실행 순서 근거: 도메인·전화번호는 정규화 후 완전 일치,
 # 문구는 정규화 후 부분 일치. 아래 임계치는 담당자(작업 묶음 2) 확정 전 기본값이다.
-MIN_PHRASE_MATCH_CHARS = 6
+#
+# 부분 일치는 최장 공통 부분수열(LCS)로 본다. 같은 사기 문구는 글자를 끼워 넣거나
+# 조사를 바꿔 재사용되므로("주소 불일치로 반송" → "주소지 불일치 반송 예정"),
+# 연속된 부분문자열만 보면 놓친다. 길이와 비율을 함께 요구해 짧은 우연 일치를 막는다.
+# 한국어는 어미(습니다·세요)가 자주 겹쳐 짧은 문장끼리 우연히 높은 LCS가 나온다.
+# "안녕하세요 반갑습니다" vs "안녕히 가세요 고맙습니다"가 0.6/6자 기준에서 70%로
+# 잡혔다. 실제 사기 문구는 길고 재사용 시 유사도가 훨씬 높아 아래 기준을 넘는다.
+MIN_PHRASE_MATCH_CHARS = 8
+MIN_PHRASE_MATCH_RATIO = 0.75
+# 저장·비교할 문구 길이 상한. LCS는 길이의 곱에 비례하므로 상한이 필요하다.
+MAX_PHRASE_CHARS = 300
+# 원문 추출 시 훑을 최근 메시지 수.
+_MESSAGE_SCAN_LIMIT = 20
 
 # 설계서 1.5 보안: 식별 정보는 원문 대신 해시 등 최소 정보만 저장한다.
 _HASH_LENGTH = 16
@@ -36,6 +49,8 @@ _URL_RE = re.compile(r"\b(?:https?://)?((?:[\w-]+\.)+[a-z]{2,})(?:[/:?#]\S*)?", 
 _PHONE_RE = re.compile(r"\b0\d{1,2}[-.\s]?\d{3,4}[-.\s]?\d{4}\b")
 _NON_PHRASE_RE = re.compile(r"[^0-9a-z가-힣]+")
 _DIGIT_RUN_RE = re.compile(rf"\d{{{_DIGIT_RUN_MIN},}}")
+# PIIMiddleware가 남긴 <SCAM_PHONE_1> 같은 토큰. 문구 비교에 섞이면 안 된다.
+_TOKEN_RE = re.compile(r"<[A-Z_]+_\d+>")
 
 
 class ReportRecord(TypedDict, total=False):
@@ -93,13 +108,16 @@ def mask_phone(value: str) -> str:
 def normalize_phrase(text: str) -> str:
     """문구 비교용 정규화.
 
-    소문자화 후 한글·영숫자만 남기고, 그 다음 길이 _DIGIT_RUN_MIN 이상의 숫자열을
-    제거한다. 순서가 중요하다 — 구분자를 먼저 지워야 "010-1111-2222"가 11자리
-    숫자열로 보인다. 전화번호·계좌번호는 별도 채널로 대조하므로 문구에 남길
-    이유가 없고, 남기면 일치 문자열이 그대로 프롬프트에 노출된다.
+    문구 채널은 "같은 문장을 쓰는가"만 본다. URL과 번호는 각자 전용 채널이 있으므로
+    문구에서 제거한다. 남기면 두 가지가 잘못된다 — 같은 사실을 두 번 세고,
+    일치 문자열이 `httpvvcjtop`처럼 사용자에게 보일 근거 문장으로 나간다.
+
+    순서가 중요하다. 토큰과 URL을 먼저 지우고, 구분자를 지운 뒤, 숫자열을 지운다.
+    구분자를 먼저 지우면 "010-1111-2222"가 11자리 숫자열로 보이기 때문이다.
     """
-    compact = _NON_PHRASE_RE.sub("", text.lower())
-    return _DIGIT_RUN_RE.sub("", compact)
+    without_url = _URL_RE.sub(" ", _TOKEN_RE.sub(" ", text))
+    compact = _NON_PHRASE_RE.sub("", without_url.lower())
+    return _DIGIT_RUN_RE.sub("", compact)[:MAX_PHRASE_CHARS]
 
 
 def extract_domains(text: str) -> list[str]:
@@ -199,30 +217,54 @@ def match_history(
                 ))
 
         past_phrase = record.get("phrase") or ""
-        overlap = _longest_common_substring(phrase, past_phrase)
-        if len(overlap) >= MIN_PHRASE_MATCH_CHARS:
+        similarity = phrase_similarity(phrase, past_phrase)
+        if similarity is not None:
             matches.append(HistoryMatch(
-                key=key, field="phrase", value=overlap,
+                key=key, field="phrase", value=f"{round(similarity * 100)}%",
                 summary=summary, scam_type=scam_type, reported=reported,
             ))
     return matches
 
 
-def _longest_common_substring(left: str, right: str) -> str:
-    """두 정규화 문자열의 최장 공통 부분문자열. 문구 부분 일치 판정에 쓴다."""
-    if not left or not right:
-        return ""
+def phrase_similarity(left: str, right: str) -> float | None:
+    """두 정규화 문구의 유사도. 기준 미달이면 None.
+
+    최장 공통 부분수열 길이를 짧은 쪽 길이로 나눈다. 길이(`MIN_PHRASE_MATCH_CHARS`)와
+    비율(`MIN_PHRASE_MATCH_RATIO`)을 모두 넘어야 일치로 본다. 길이만 보면 긴 글에서
+    우연히 겹치고, 비율만 보면 짧은 글이 쉽게 통과한다.
+    """
+    shorter = min(len(left), len(right))
+    if shorter < MIN_PHRASE_MATCH_CHARS:
+        return None
+    overlap = _lcs_length(left, right)
+    if overlap < MIN_PHRASE_MATCH_CHARS:
+        return None
+    ratio = overlap / shorter
+    return ratio if ratio >= MIN_PHRASE_MATCH_RATIO else None
+
+
+def _lcs_length(left: str, right: str) -> int:
+    """최장 공통 부분수열 길이. 연속일 필요는 없다."""
     previous = [0] * (len(right) + 1)
-    best_len = best_end = 0
     for i in range(1, len(left) + 1):
         current = [0] * (len(right) + 1)
+        left_char = left[i - 1]
         for j in range(1, len(right) + 1):
-            if left[i - 1] == right[j - 1]:
+            if left_char == right[j - 1]:
                 current[j] = previous[j - 1] + 1
-                if current[j] > best_len:
-                    best_len, best_end = current[j], i
+            else:
+                current[j] = max(previous[j], current[j - 1])
         previous = current
-    return left[best_end - best_len:best_end]
+    return previous[len(right)]
+
+
+def _with_subject_particle(word: str) -> str:
+    """받침 유무에 따라 이/가를 붙인다. "도메인가"처럼 나오지 않게 한다."""
+    last = word[-1]
+    if "가" <= last <= "힣":
+        has_final = (ord(last) - ord("가")) % 28 != 0
+        return f"{word}이" if has_final else f"{word}가"
+    return f"{word}가"
 
 
 def describe_matches(matches: list[HistoryMatch]) -> list[str]:
@@ -236,9 +278,9 @@ def describe_matches(matches: list[HistoryMatch]) -> list[str]:
         # phone은 match_history가 이미 마스킹해 담는다.
         value = match["value"]
         status = "신고 접수된" if match["reported"] else "기록된"
-        lines.append(
-            f"과거 {status} 사건과 {labels[match['field']]}가 일치합니다 ({value})."
-        )
+        subject = _with_subject_particle(labels[match["field"]])
+        verb = "유사합니다" if match["field"] == "phrase" else "일치합니다"
+        lines.append(f"과거 {status} 사건과 {subject} {verb} ({value}).")
     return lines
 
 
@@ -250,6 +292,31 @@ def summarize_for_prompt(matches: list[HistoryMatch]) -> str:
     return "이번 입력은 이 사용자의 과거 신고 이력과 다음이 일치합니다:\n" + "\n".join(
         f"- {line}" for line in lines
     )
+
+
+def source_text_from_messages(messages: Any) -> str:
+    """대화 메시지에서 문구 대조용 원문을 모은다.
+
+    `guards.prepare_guarded_message`가 만든 HumanMessage는 content가
+    `{"user_statement": ..., "external_texts": [...]}` JSON이다. 붙여넣은 문자
+    원문(`external_texts`)만 쓴다 — 사용자 진술은 사람마다 달라 문구 대조 근거가
+    되지 못한다. 형식이 다르면 빈 문자열을 돌려주고 예외를 올리지 않는다.
+    """
+    collected: list[str] = []
+    for message in list(messages or [])[-_MESSAGE_SCAN_LIMIT:]:
+        content = getattr(message, "content", None)
+        if not isinstance(content, str) or not content.startswith("{"):
+            continue
+        try:
+            payload = json.loads(content)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for text in payload.get("external_texts") or []:
+            if isinstance(text, str):
+                collected.append(text)
+    return " ".join(collected)
 
 
 def record_from_state(state: dict[str, Any], source_text: str) -> ReportRecord:
