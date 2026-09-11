@@ -15,6 +15,9 @@ ESCALATION_MODEL: Final[str] = "gpt-5"
 LOW_CONFIDENCE_THRESHOLD: Final[float] = 0.7
 LONG_INPUT_CHAR_THRESHOLD: Final[int] = 4_000
 LONG_CONVERSATION_TURN_THRESHOLD: Final[int] = 6
+DEFAULT_MODEL_TIMEOUT_SECONDS: Final[int] = 20
+DEFAULT_MODEL_MAX_OUTPUT_TOKENS: Final[int] = 800
+GUARD_MAX_INPUT_CHARS: Final[int] = 12_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,9 +27,9 @@ class AgentSettings:
     api_key: str | None
     nano_model: str = DEFAULT_MODEL
     review_model: str = ESCALATION_MODEL
-    nano_timeout_seconds: float = 20.0
+    nano_timeout_seconds: float = DEFAULT_MODEL_TIMEOUT_SECONDS
     review_timeout_seconds: float = 30.0
-    nano_max_output_tokens: int = 800
+    nano_max_output_tokens: int = DEFAULT_MODEL_MAX_OUTPUT_TOKENS
     review_max_output_tokens: int = 1200
     confidence_threshold: float = LOW_CONFIDENCE_THRESHOLD
     recursion_limit: int = 12
@@ -52,8 +55,11 @@ class AgentSettings:
 
 __all__ = [
     "AgentSettings",
+    "DEFAULT_MODEL_MAX_OUTPUT_TOKENS",
+    "DEFAULT_MODEL_TIMEOUT_SECONDS",
     "DEFAULT_MODEL",
     "ESCALATION_MODEL",
+    "GUARD_MAX_INPUT_CHARS",
     "LONG_CONVERSATION_TURN_THRESHOLD",
     "LONG_INPUT_CHAR_THRESHOLD",
     "LOW_CONFIDENCE_THRESHOLD",

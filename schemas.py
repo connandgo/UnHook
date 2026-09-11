@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing_extensions import TypedDict
 
 ScamType = Literal[
@@ -69,3 +69,29 @@ class CallerVerificationResult(TypedDict):
 class PlaybookResult(TypedDict):
     steps: list[str]
     contacts: list[str]
+
+
+InjectionReason = Literal[
+    "instruction_override", "authority_spoofing", "verdict_manipulation",
+    "boundary_spoofing", "output_manipulation", "secret_request",
+]
+
+
+class InjectionDecision(BaseModel):
+    """Detector output; never contains untrusted free-form explanations."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    injection_detected: bool
+    reason_codes: list[InjectionReason] = Field(max_length=6)
+
+    @model_validator(mode="after")
+    def validate_reasons(self) -> "InjectionDecision":
+        if self.injection_detected != bool(self.reason_codes):
+            raise ValueError("Detection and reason codes must agree")
+        return self
+
+
+class InputGuardResult(TypedDict):
+    message_id: str
+    status: Literal["not_checked", "not_detected", "detected", "unavailable"]
+    reason_codes: list[InjectionReason]

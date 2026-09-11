@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from langchain.agents import AgentState
 
-from schemas import DamageStage, RiskLevel, ScamAssessment
+from schemas import DamageStage, InputGuardResult, RiskLevel, ScamAssessment
 
 Channel = Literal["sms", "call", "messenger", "unknown"]
 AgeGroup = Literal["general", "senior"]
@@ -32,6 +32,7 @@ class UnHookState(AgentState[ScamAssessment], total=False):
     pii_vault: dict[str, str]
     incident_report: dict[str, Any] | None
     history_matches: list[dict[str, Any]]
+    input_guard: InputGuardResult | None
 
 
 def create_initial_state() -> UnHookState:
@@ -52,4 +53,5 @@ def create_initial_state() -> UnHookState:
         "pii_vault": {},
         "incident_report": None,
         "history_matches": [],
+        "input_guard": None,
     }
