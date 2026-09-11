@@ -5,6 +5,11 @@
 
 Tool은 State를 직접 쓰지 않는다 (설계서 3.1 핵심 원칙). 조회 결과는 반환값으로만
 돌려주고, State 반영은 미들웨어가 담당한다.
+
+반환 데이터에는 개인정보를 남기지 않는다 (AGENTS.md 팀별 연결 작업 ⑤).
+외부 API 응답처럼 이 모듈이 내용을 통제할 수 없는 문자열은 `_scrub()`으로 한 번 거른다.
+`ContentIsolationMiddleware`(묶음 3)가 ToolMessage를 `untrusted_tool_result`로 감싸지만
+그것은 구조적 격리이며 내용 검사는 아니다.
 """
 
 from __future__ import annotations
@@ -24,6 +29,10 @@ from langchain.tools import ToolRuntime, tool
 
 import memory
 from schemas import CallerVerificationResult, PlaybookResult, URLRiskResult
+
+# 외부 문자열 1건의 상한. 초과분은 자른다. 조회 결과 식별에는 충분하고,
+# 오염된 응답이 프롬프트를 밀어내는 것을 막는다.
+MAX_EXTERNAL_FIELD_CHARS = 120
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 KISA_URL_CSV = DATA_DIR / "kisa_urls.csv"
@@ -105,6 +114,30 @@ _IPV4_HOST_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 _HOST_RE = re.compile(r"^[\w.-]+$")
 
 _blacklist_cache: set[str] | None = None
+
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _scrub(value: str) -> str:
+    """이 모듈이 통제할 수 없는 외부 문자열을 반환 전에 거른다.
+
+    개인정보는 `audit.mask_output_pii`로 라벨 처리한다. 묶음 4의 출력 쪽 규칙을
+    그대로 쓰는 이유는 Tool 반환값도 모델을 거쳐 사용자에게 도달하기 때문이다.
+    `pii.mask_text`는 토큰화를 하므로 쓰지 않는다 — vault를 함께 넘기지 않는
+    자리에서는 해석 불가능한 토큰만 남는다.
+    """
+    if not value:
+        return ""
+    text = _CONTROL_CHARS_RE.sub(" ", str(value)).strip()
+    if len(text) > MAX_EXTERNAL_FIELD_CHARS:
+        text = text[:MAX_EXTERNAL_FIELD_CHARS].rstrip() + "…"
+    try:
+        import audit
+        masked, _ = audit.mask_output_pii(text, None)
+        return masked
+    except ImportError:
+        # audit.py가 없어도 Tool 자체는 동작해야 한다. 길이·제어문자 정제는 유지된다.
+        return text
 
 
 # ---------------------------------------------------------------------------
@@ -314,11 +347,11 @@ def verify_number(
             is_official=None, official_numbers=[], company=company_name or ""
         )
 
-    wanted = company_name.strip() if company_name else ""
+    wanted = _scrub(company_name) if company_name else ""
     matched_company = ""
     official_numbers: list[str] = []
     for entry in companies:
-        name = str(entry.get("kor_co_nm") or "")
+        name = _scrub(str(entry.get("kor_co_nm") or ""))
         number = memory.normalize_phone(str(entry.get("cal_tel") or ""))
         if not number:
             continue
@@ -372,8 +405,14 @@ def report_to_authority(
     receipt_no = make_receipt_no(scam_type)
     store = getattr(runtime, "store", None)
     if store is not None:
+        # target만으로는 도메인·번호만 남고 문구 채널이 비어 TS-05 재방문 경고가
+        # 절반만 동작한다. 대화의 붙여넣은 원문을 함께 넣는다.
+        pasted = memory.source_text_from_messages(
+            (getattr(runtime, "state", None) or {}).get("messages")
+        )
         record = memory.build_record(
-            summary, source_text=target, scam_type=scam_type, reported=True
+            summary, source_text=f"{target} {pasted}".strip(),
+            scam_type=scam_type, reported=True
         )
         record["receipt_no"] = receipt_no
         # 설계서 2.5: 실패 시 예외 발생, 재시도 안 함.

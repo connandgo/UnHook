@@ -562,8 +562,27 @@ flowchart TD
   (1.5 보안). 문구 비교용 정규화는 6자리 이상 숫자열을 제거하므로 번호가 문구 채널로
   노출되지 않는다. 표시용 마스킹 값은 이번 입력에서 만들고 Store에서 꺼내지 않는다.
 - `MemoryInjectMiddleware`(작업 묶음 2)는 `load_history()` → `match_history()` →
-  `summarize_for_prompt()` 순서로 호출한다. 문구 부분 일치 기준은 `MIN_PHRASE_MATCH_CHARS`
-  상수로 두었으며 임계치 확정은 기존 담당자 확인 사항으로 남는다.
+  `summarize_for_prompt()` 순서로 호출한다.
+- 문구 부분 일치는 최장 공통 부분수열(LCS) 길이를 짧은 쪽 길이로 나눈 비율로 본다.
+  `MIN_PHRASE_MATCH_CHARS`(8)와 `MIN_PHRASE_MATCH_RATIO`(0.75)를 모두 넘어야 일치다.
+  같은 사기 문구는 글자를 끼워 넣거나 조사를 바꿔 재사용되므로("주소 불일치로 반송" →
+  "주소지 불일치 반송 예정") 연속된 부분문자열만 보면 놓친다. 한국어는 어미가 자주 겹쳐
+  짧은 문장끼리 우연히 높은 LCS가 나오므로 길이와 비율을 함께 요구한다.
+  임계치 확정은 기존 담당자 확인 사항으로 남는다.
+- 문구 비교 대상에서 URL과 6자리 이상 숫자열을 제거한다. 도메인·전화번호는 전용 채널이
+  있으므로 남기면 같은 사실을 두 번 세고, 일치 문자열이 `httpvvcjtop` 같은 형태로
+  사용자에게 보일 근거 문장에 나간다. 문구 일치의 표시값은 원문이 아니라 유사도(%)다.
+- `report_to_authority`는 신고 대상(`target`)과 함께 대화의 붙여넣은 원문을 이력에 담는다.
+  `target`만 저장하면 도메인·번호만 남고 문구 채널이 비어 4.2 TS-05의 "문구·도메인 패턴이
+  동일합니다" 경고가 절반만 동작한다. 원문은 `memory.source_text_from_messages()`가
+  `guards.prepare_guarded_message`의 `external_texts`에서만 모은다 — 사용자 진술은 사람마다
+  달라 문구 대조 근거가 되지 못한다. 메시지 형식이 다르면 빈 문자열로 진행한다.
+- 문구 정규화는 `PIIMiddleware`가 남긴 `<SCAM_PHONE_1>` 형태의 토큰도 제거한다.
+- Tool 반환값에는 개인정보를 남기지 않는다. `check_url_risk`는 입력 URL을 반향하지 않으며,
+  `verify_caller_number`가 외부 API에서 받은 문자열은 `audit.mask_output_pii`로 가리고
+  제어문자 제거·길이 제한(`MAX_EXTERNAL_FIELD_CHARS`)을 적용한다. 공식 대표번호는 대조에
+  필요하므로 가리지 않는다. `pii.mask_text`는 토큰화를 하므로 이 자리에 쓰지 않는다 —
+  vault를 함께 넘기지 않으면 해석 불가능한 토큰만 남는다.
 - `pii.py`는 `PIIMiddleware(external_splitter=None, tool_args_to_restore=None)`와 순수 함수 `find_pii()`, `find_unmasked_pii()`, `mask_text()`, `restore_tokens()`, `resolve_token()`을 제공한다.
   붙여넣은 원문 구간 판별은 기본 규칙(`[Web발신]` 머리말, 따옴표, `문자:` 뒤)을 쓰며, `guards.py`가 기준을 확정하면
   `text -> list[(start, end)]` 함수를 `external_splitter`로 넘긴다. 토큰 원문 복원은 정리서 표시·신고 접수에서만 한다.
@@ -659,3 +678,4 @@ URL 검사는 `urllib.parse`로 경로·쿼리의 검사 사본만 한 번 디�
 | 2026-09-11 | 작업 묶음 4 구현 — `pii.py`(주민번호·카드 마스킹, 사기범 계좌·전화번호 토큰화, Tool 인자 토큰 복원), `audit.py`(G5 단정·안심 표현 완화, G6 판정 보류, 출력 PII 가림, 질문 1개 제한, 스키마 실패 시 안전 응답). 3.2 `PIIMiddleware`를 Custom·`before_agent`+`before_model`+`wrap_tool_call`로 변경하고 `after_model` 역순 실행에 따른 등록 순서 명시, 3.3 G4·G5 판별 방식 갱신, 5절 공유 계약 추가 |
 | 2026-09-11 | `check_url_risk` 점수 산출을 단순 합산에서 결정적 신호 하한 + 보강 신호 누적 구조로 변경하고 5절에 규칙 명시. 유사 도메인 판정에 정상 도메인 화이트리스트를 도입해 정식 도메인 오탐을 제거하고, 브랜드 비교 범위를 호스트 전체로 넓혀 하위 도메인 위장을 탐지 |
 | 2026-09-11 | 2.5 `get_scam_playbook` RAG 구성 확정(작업 묶음 6) — 벡터 스토어 `InMemoryVectorStore`·임베딩 `text-embedding-3-small`, 출처별 원문을 step 단위로 청킹하고 `step_key`·`scam_types`·`damage_stages` 메타데이터 부여, 필터 3단계 완화(유형+단계 → 단계 → 폴백)와 `step_order` 표 정렬, `steps` 형식 `"<step_key> — <설명>"`, `search_playbook` 무예외 원칙, `load_playbook_index()` 사전 로딩. 5절에 묶음 6 공유 계약과 `tests/test_rag.py` 추가. `data/contacts.json`·`playbook_fallback.json`·`playbook_docs/`(금감원 2·KISA 1·경찰청 1, 청크 31개) 준비, `rag.py`·`tests/test_rag.py` 구현, `requirements.txt`에 `pyyaml` 추가(`langchain-openai`는 main에 이미 있음) |
+| 2026-09-11 | 작업 묶음 5 — Tool 반환값의 외부 문자열 정제(`audit.mask_output_pii` 재사용, 제어문자·길이 제한) 추가. 문구 대조에서 URL·숫자열을 제거하고 판정을 최장 공통 부분문자열에서 LCS 비율 방식으로 교체, 표시값을 유사도(%)로 변경. 근거 문장의 조사 처리 수정 |
