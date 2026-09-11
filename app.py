@@ -196,8 +196,9 @@ def inject_theme_css() -> None:
         [data-testid="stChatMessageAvatarCustom"] img { width: 100%; height: 100%; object-fit: contain; }
         .uh-hero-face { width: 4.5rem; height: 4.5rem; margin-bottom: 1rem;
           filter: drop-shadow(0 8px 14px color-mix(in srgb, var(--uh-primary) 35%, transparent)); }
+        /* Streamlit이 markdown 컨테이너 밑에 -1rem 여백을 두므로(문단 여백 보정) 말풍선 마지막 요소는 1rem을 돌려준다. */
         .uh-quote {
-          margin-top: 0.6rem; padding: 0.6rem 0.85rem;
+          margin: 0 0 1rem; padding: 0.7rem 0.9rem;
           background: var(--uh-accent);
           border-left: 3px solid var(--uh-primary); border-radius: 0.6rem;
           white-space: pre-wrap; word-break: break-word; font-size: 0.9rem; line-height: 1.5;
@@ -295,7 +296,7 @@ def inject_theme_css() -> None:
         .uh-check.done { color: var(--uh-muted-fg); text-decoration: line-through; }
 
         /* ── 분석 중 표시: 제목 줄 + 안쪽 카드 ── */
-        .uh-working { padding: 0.9rem 1.1rem 1rem; }
+        .uh-working { padding: 0.9rem 1.1rem 1rem; margin-bottom: 1rem; }
         .uh-working-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; font-size: 0.95rem; margin-bottom: 0.7rem; }
         .uh-working-more { color: var(--uh-muted-fg); letter-spacing: 0.1em; }
         .uh-working-body { background: var(--uh-card); border-radius: 0.9rem; padding: 0.8rem 0.95rem; }
