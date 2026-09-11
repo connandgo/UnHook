@@ -36,14 +36,8 @@ STAGE_STEPS = [
 QUICK_STARTS = ["택배 문자 링크를 눌렀어요", "앱을 설치하라고 해요", "이미 돈을 보냈어요"]
 DEFAULT_USER_ID = "demo-user"
 DEFAULT_AGE_GROUP = "general"
-# 어시스턴트 아바타: primary 원 위의 낚싯바늘. 이모지보다 브랜드에 가깝고 테마와 같은 색을 쓴다.
-ASSISTANT_AVATAR = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
-<circle cx="20" cy="20" r="20" fill="#1E9DF1"/>
-<g fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-<circle cx="23.5" cy="9.5" r="2.3"/>
-<path d="M23.5 12v10.5a6.5 6.5 0 0 1-13 0V19"/>
-<path d="M10.5 19l-3 2.6M10.5 19l3.4 2.4"/>
-</g></svg>"""
+# 어시스턴트 아바타: Material 심볼의 낚싯바늘. 정렬·굵기가 일정하고 색은 CSS에서 입힌다.
+ASSISTANT_AVATAR = ":material/phishing:"
 
 
 def inject_theme_css() -> None:
@@ -55,8 +49,8 @@ def inject_theme_css() -> None:
     st.markdown(
         """
         <style>
-        /* 한글 본문용 폰트. config.toml의 font는 URL을 하나만 받으므로 여기서 불러온다. */
-        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap');
+        /* 글꼴: Pretendard. config.toml의 font 소스 URL이 헤더에 주입되지 않아 여기서 직접 불러온다. */
+        @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css');
         :root {
           --uh-fg: light-dark(#0F1419, #E7E9EA);
           --uh-card: light-dark(#F7F8F8, #17181C);
@@ -122,7 +116,13 @@ def inject_theme_css() -> None:
           padding: 0.75rem 1.05rem;
         }
         [data-testid="stChatMessageAvatarUser"] { background: var(--uh-muted) !important; color: var(--uh-fg) !important; }
-        [data-testid="stChatMessageAvatarCustom"] { border-radius: 50%; }
+        [data-testid="stChatMessageAvatarCustom"] {
+          width: 2rem; height: 2rem; border-radius: 50%; border: none;
+          background: var(--uh-primary); display: grid; place-items: center;
+        }
+        [data-testid="stChatMessageAvatarCustom"] [data-testid="stIconMaterial"] {
+          color: #fff !important; font-size: 1.25rem; font-variation-settings: "wght" 500;
+        }
         .uh-quote {
           margin-top: 0.6rem; padding: 0.6rem 0.85rem;
           background: light-dark(rgba(255,255,255,0.7), rgba(255,255,255,0.05));
@@ -132,7 +132,7 @@ def inject_theme_css() -> None:
         .uh-quote-label { color: var(--uh-primary); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; margin-bottom: 0.2rem; }
 
         /* ── 어시스턴트 답변 ── */
-        .uh-answer-head { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin: 0.15rem 0 0.9rem; }
+        .uh-answer-head { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; min-height: 2rem; margin: 0 0 0.75rem; }
         .uh-answer-head .uh-verdict { font-size: 0.85rem; padding: 0.22rem 0.7rem; }
         .uh-answer-meta { color: var(--uh-muted-fg); font-size: 0.85rem; }
         .uh-h { font-weight: 700; font-size: 0.95rem; margin: 0.9rem 0 0.5rem; }
@@ -150,8 +150,10 @@ def inject_theme_css() -> None:
         .uh-step-contact {
           display: inline-block; margin-left: 0.45rem; padding: 0.05rem 0.55rem; border-radius: 999px;
           background: var(--uh-accent); color: var(--uh-primary); font-size: 0.8rem; font-weight: 600; vertical-align: 1px;
+          text-decoration: none !important; white-space: nowrap;
         }
-        .uh-ask { margin: 1.1rem 0 0.4rem; font-size: 1.05rem; line-height: 1.55; font-weight: 500; }
+        a.uh-step-contact:hover { background: var(--uh-primary); color: #fff; }
+        .uh-ask { padding: 0.9rem 0 0.2rem; font-size: 1.05rem; line-height: 1.6; font-weight: 500; }
         .uh-quiet { color: var(--uh-muted-fg); font-size: 0.85rem; }
         /* 근거·실행 정보는 테두리 없는 작은 토글로. 답변의 무게를 할 일에 둔다. */
         [data-testid="stChatMessage"] [data-testid="stExpander"] details {
@@ -161,9 +163,8 @@ def inject_theme_css() -> None:
           padding: 0.25rem 0; font-size: 0.85rem; color: var(--uh-muted-fg);
         }
         [data-testid="stChatMessage"] [data-testid="stExpander"] summary:hover { color: var(--uh-primary); }
-        [data-testid="stChatMessage"] [data-testid="stExpanderDetails"] {
-          padding: 0.4rem 0 0.6rem 0.9rem; border-left: 2px solid var(--uh-border); font-size: 0.9rem;
-        }
+        [data-testid="stChatMessage"] [data-testid="stExpanderDetails"] { padding: 0.2rem 0 0.4rem; font-size: 0.9rem; }
+        [data-testid="stChatMessage"] [data-testid="stExpanderDetails"] ul { margin: 0.2rem 0 0.6rem; }
 
         /* ── 사이드바: 사건 기록 ── */
         [data-testid="stSidebar"] .uh-section {
@@ -172,7 +173,7 @@ def inject_theme_css() -> None:
         }
         .uh-fact { display: flex; justify-content: space-between; align-items: center; padding: 0.4rem 0; font-size: 0.9rem; }
         .uh-fact + .uh-fact { border-top: 1px solid var(--uh-border); }
-        .uh-tag { padding: 0.1rem 0.6rem; border-radius: 999px; font-size: 0.78rem; font-weight: 600; }
+        .uh-tag { padding: 0.1rem 0.6rem; border-radius: 999px; font-size: 0.78rem; font-weight: 600; text-align: right; max-width: 60%; }
         .uh-tag.bad { background: color-mix(in srgb, #F4212E 14%, transparent); color: #F4212E; }
         .uh-tag.ok { background: color-mix(in srgb, #00B87A 16%, transparent); color: #00B87A; }
         .uh-tag.na { background: var(--uh-muted); color: var(--uh-muted-fg); }
@@ -342,10 +343,14 @@ def render_assessment(entry: dict[str, Any]) -> None:
     if a["immediate_actions"]:
         cards = []
         for step in a["immediate_actions"]:
-            contact = (
-                f"<span class='uh-step-contact'>☎ {html.escape(str(step['contact']))}</span>"
-                if step.get("contact") else ""
-            )
+            contact = ""
+            if step.get("contact"):
+                raw = str(step["contact"]).strip()
+                if raw.startswith(("http://", "https://")):
+                    label = html.escape(raw.split("://", 1)[1].rstrip("/"))
+                    contact = f"<a class='uh-step-contact' href='{html.escape(raw)}' target='_blank' rel='noopener'>🔗 {label}</a>"
+                else:
+                    contact = f"<span class='uh-step-contact'>☎ {html.escape(raw)}</span>"
             cards.append(
                 f"<div class='uh-step'><span class='uh-step-n'>{step['priority']}</span>"
                 f"<div class='uh-step-body'>{html.escape(step['action'])}{contact}</div></div>"
@@ -355,7 +360,7 @@ def render_assessment(entry: dict[str, Any]) -> None:
             unsafe_allow_html=True,
         )
     if a.get("next_question"):
-        st.markdown(f"<p class='uh-ask'>{html.escape(a['next_question'])}</p>", unsafe_allow_html=True)
+        st.markdown(f"<div class='uh-ask'>{html.escape(a['next_question'])}</div>", unsafe_allow_html=True)
     with st.expander("왜 이렇게 판단했나요?"):
         # 항목마다 st.markdown을 부르면 블록 간격이 벌어져 한 문자열로 모아 그린다.
         lines = ["**판단 근거**", *(f"- {item}" for item in a["evidence"])]
