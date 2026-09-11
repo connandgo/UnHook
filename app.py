@@ -167,11 +167,37 @@ def inject_theme_css() -> None:
           border: none; background: transparent; border-radius: 0;
         }
         [data-testid="stChatMessage"] [data-testid="stExpander"] summary {
-          padding: 0.25rem 0; font-size: 0.85rem; color: var(--uh-muted-fg);
+          padding: 0.25rem 0; font-size: 0.85rem; color: var(--uh-muted-fg); background: transparent !important;
         }
         [data-testid="stChatMessage"] [data-testid="stExpander"] summary:hover { color: var(--uh-primary); }
-        [data-testid="stChatMessage"] [data-testid="stExpanderDetails"] { padding: 0.2rem 0 0.4rem; font-size: 0.9rem; }
-        [data-testid="stChatMessage"] [data-testid="stExpanderDetails"] ul { margin: 0.2rem 0 0.6rem; }
+        [data-testid="stChatMessage"] [data-testid="stExpanderDetails"] { padding: 0.2rem 0 0.4rem; }
+        .uh-detail {
+          background: var(--uh-card); border: 1px solid var(--uh-border); border-radius: 0.9rem;
+          padding: 0.25rem 1.1rem; font-size: 0.9rem;
+        }
+        .uh-detail section { padding: 0.85rem 0; }
+        .uh-detail section + section { border-top: 1px dashed var(--uh-border); }
+        .uh-detail h4 {
+          margin: 0 0 0.45rem; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; color: var(--uh-muted-fg);
+        }
+        .uh-detail ul { list-style: none; margin: 0 !important; padding: 0 !important; display: flex; flex-direction: column; gap: 0.35rem; }
+        .uh-detail li { padding: 0 !important; }
+        .uh-detail li { display: flex; gap: 0.6rem; align-items: flex-start; line-height: 1.5; }
+        .uh-mark { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; margin-top: 0.5rem; }
+        .uh-mark.yes { background: var(--uh-primary); }
+        .uh-mark.ask { background: transparent; border: 2px solid var(--uh-muted-fg); box-sizing: border-box; }
+        .uh-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+        .uh-chip {
+          display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.15rem 0.6rem; border-radius: 999px;
+          background: light-dark(#fff, #000); border: 1px solid var(--uh-border); color: var(--uh-muted-fg); font-size: 0.78rem;
+        }
+        .uh-chip b { color: var(--uh-fg); font-weight: 600; font-family: var(--font-mono, Menlo, monospace); font-size: 0.74rem; }
+        .uh-chip.warn { border-color: color-mix(in srgb, #F7B928 60%, transparent); background: color-mix(in srgb, #F7B928 14%, transparent); color: light-dark(#7A5A00, #F7B928); }
+        .uh-tool {
+          margin-top: 0.5rem; padding: 0.45rem 0.7rem; border-radius: 0.5rem;
+          background: light-dark(#fff, #000); border: 1px solid var(--uh-border);
+          font-family: var(--font-mono, Menlo, monospace); font-size: 0.76rem; line-height: 1.5; word-break: break-all;
+        }
 
         /* ── 사이드바: 사건 기록 ── */
         [data-testid="stSidebar"] .uh-section {
@@ -407,15 +433,35 @@ def render_assessment(entry: dict[str, Any]) -> None:
     if a.get("next_question"):
         st.markdown(f"<div class='uh-ask'>{html.escape(a['next_question'])}</div>", unsafe_allow_html=True)
     with st.expander("왜 이렇게 판단했나요?"):
-        # 항목마다 st.markdown을 부르면 블록 간격이 벌어져 한 문자열로 모아 그린다.
-        lines = ["**판단 근거**", *(f"- {item}" for item in a["evidence"])]
-        if a["unverified"]:
-            lines += ["", "**아직 확인되지 않은 것**", *(f"- {item}" for item in a["unverified"])]
-        model_line = f"모델 `{entry['model_used']}`"
-        if entry["escalated"]:
-            model_line += f" · 재검토: {', '.join(entry['escalation_reasons'])}"
-        lines += ["", "**실행 정보**", "", model_line, "", *(entry["tool_lines"] or ["Tool 호출 없음"])]
-        st.markdown("  \n".join(lines))
+        st.markdown(detail_html(entry), unsafe_allow_html=True)
+
+
+def detail_html(entry: dict[str, Any]) -> str:
+    """판단 근거·미확인 사항·실행 정보를 구획이 분명한 카드 하나로 그린다."""
+    a = entry["assessment"]
+
+    def items(values: list[str], mark: str) -> str:
+        return "".join(f"<li><span class='uh-mark {mark}'></span>{html.escape(v)}</li>" for v in values)
+
+    sections = [
+        f"<section><h4>판단 근거</h4><ul>{items(a['evidence'], 'yes')}</ul></section>",
+    ]
+    if a["unverified"]:
+        sections.append(f"<section><h4>아직 확인되지 않은 것</h4><ul>{items(a['unverified'], 'ask')}</ul></section>")
+
+    chips = [f"<span class='uh-chip'>모델 <b>{html.escape(entry['model_used'])}</b></span>"]
+    if entry["escalated"]:
+        chips.append(f"<span class='uh-chip warn'>재검토 · {html.escape(', '.join(entry['escalation_reasons']))}</span>")
+    tools = []
+    for line in entry["tool_lines"]:
+        text = html.escape(line.replace("`", ""))
+        tools.append(f"<div class='uh-tool'>{text}</div>")
+    if not tools:
+        chips.append("<span class='uh-chip'>Tool 호출 없음</span>")
+    sections.append(
+        f"<section><h4>실행 정보</h4><div class='uh-chips'>{''.join(chips)}</div>{''.join(tools)}</section>"
+    )
+    return f"<div class='uh-detail'>{''.join(sections)}</div>"
 
 
 def render_case_file(snap: StateSnapshot) -> None:
