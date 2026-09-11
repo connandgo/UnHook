@@ -17,6 +17,18 @@ from agent import AgentRunResult, AgentTurnInput, StateSnapshot, build_unhook_ag
 
 REPORT_APPROVAL_STATEMENT = "신고 접수를 승인합니다. report_to_authority로 접수해 주세요."
 RISK_ICON = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢", "insufficient_info": "⚪"}
+RISK_LABEL = {
+    "critical": "매우 위험", "high": "위험", "medium": "주의", "low": "낮음", "insufficient_info": "정보 부족",
+}
+RISK_COLOR = {
+    "critical": "#d32f2f", "high": "#ef6c00", "medium": "#f9a825", "low": "#2e7d32", "insufficient_info": "#757575",
+}
+STAGE_STEPS = [
+    ("none", "피해 없음"), ("link_clicked", "링크 클릭"), ("info_exposed", "정보 노출"),
+    ("app_installed", "앱 설치"), ("money_sent", "송금"),
+]
+DEFAULT_USER_ID = "demo-user"
+DEFAULT_AGE_GROUP = "general"
 
 
 @st.cache_resource(show_spinner="Agent를 준비하는 중...")
@@ -97,8 +109,8 @@ def run_turn(statement: str, quoted: str, *, report_approved: bool = False) -> N
     agent = get_agent()
     turn = AgentTurnInput(
         thread_id=st.session_state.thread_id,
-        user_id=st.session_state.user_id,
-        age_group=st.session_state.age_group,
+        user_id=DEFAULT_USER_ID,
+        age_group=DEFAULT_AGE_GROUP,
         user_statement=statement,
         quoted_content=quoted,
         state=st.session_state.snapshot,
@@ -136,49 +148,76 @@ def run_turn(statement: str, quoted: str, *, report_approved: bool = False) -> N
 st.set_page_config(page_title="Un Hook", page_icon="🪝", layout="wide")
 
 if "thread_id" not in st.session_state:
-    st.session_state.user_id = "demo-user"
-    st.session_state.age_group = "general"
     reset_conversation()
+
+def render_state_panel(snap: StateSnapshot) -> None:
+    """현재 피해 상태를 한눈에 보이게 그린다."""
+    color = RISK_COLOR.get(snap.risk_level, "#757575")
+    st.markdown(
+        f"""
+        <div style="background:{color};color:#fff;border-radius:10px;padding:14px 16px;margin-bottom:12px;">
+          <div style="font-size:0.8rem;opacity:0.85;">현재 위험도</div>
+          <div style="font-size:1.6rem;font-weight:700;line-height:1.2;">
+            {RISK_ICON.get(snap.risk_level, "⚪")} {RISK_LABEL.get(snap.risk_level, snap.risk_level)}
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("**피해 단계**")
+    current = next((i for i, (key, _) in enumerate(STAGE_STEPS) if key == snap.damage_stage), 0)
+    rows = []
+    for i, (_, label) in enumerate(STAGE_STEPS):
+        if i == current:
+            rows.append(f"<div style='font-weight:700;color:{color};'>▶ {label}</div>")
+        elif i < current:
+            rows.append(f"<div style='color:#9e9e9e;'>✓ {label}</div>")
+        else:
+            rows.append(f"<div style='color:#bdbdbd;'>○ {label}</div>")
+    st.markdown(
+        "<div style='line-height:1.9;margin-bottom:12px;'>" + "".join(rows) + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("**확인된 사실**")
+    flags = [
+        ("링크 클릭", snap.link_clicked),
+        ("앱 설치", snap.app_installed),
+        ("송금", snap.money_sent),
+    ]
+    for label, value in flags:
+        if value is True:
+            st.markdown(f"🔴 {label} **있음**")
+        elif value is False:
+            st.markdown(f"🟢 {label} 없음")
+        else:
+            st.markdown(f"<span style='color:#9e9e9e;'>➖ {label} 미확인</span>", unsafe_allow_html=True)
+    if snap.info_exposed:
+        st.markdown("🔴 노출 정보: **" + ", ".join(snap.info_exposed) + "**")
+    if snap.sent_amount:
+        st.markdown(f"💸 송금액 **{snap.sent_amount:,}원**")
+    if snap.elapsed_minutes is not None:
+        st.markdown(f"⏱ 송금 후 **{snap.elapsed_minutes}분** 경과")
+
+    if snap.checklist:
+        st.markdown("**대응 체크리스트**")
+        done = sum(1 for v in snap.checklist.values() if v)
+        st.progress(done / len(snap.checklist), text=f"{done}/{len(snap.checklist)} 완료")
+        for key, ok in snap.checklist.items():
+            st.markdown(f"{'✅' if ok else '⬜'} {key}")
+
 
 with st.sidebar:
     st.title("🪝 Un Hook")
     st.caption("금융사기 피해 상태 확인·대응 안내 Agent")
-    st.session_state.user_id = st.text_input("사용자 ID", st.session_state.user_id)
-    st.session_state.age_group = st.selectbox(
-        "연령대", ["general", "senior"],
-        index=["general", "senior"].index(st.session_state.age_group),
-    )
     if st.button("새 대화 시작", use_container_width=True):
         reset_conversation()
         st.rerun()
-
     st.divider()
-    st.subheader("현재 피해 상태")
-    snap = StateSnapshot.model_validate(st.session_state.snapshot)
-    st.markdown(
-        f"{RISK_ICON.get(snap.risk_level, '⚪')} 위험도 `{snap.risk_level}`  \n"
-        f"피해 단계 `{snap.damage_stage}`  \n"
-        f"채널 `{snap.channel}`"
-    )
-    flags = {
-        "링크 클릭": snap.link_clicked,
-        "앱 설치": snap.app_installed,
-        "송금": snap.money_sent,
-    }
-    for label, value in flags.items():
-        mark = "✅" if value else ("❌" if value is False else "➖")
-        st.markdown(f"{mark} {label}")
-    if snap.info_exposed:
-        st.markdown("노출 정보: " + ", ".join(snap.info_exposed))
-    if snap.sent_amount:
-        st.markdown(f"송금액: {snap.sent_amount:,}원")
-    if snap.elapsed_minutes is not None:
-        st.markdown(f"경과: {snap.elapsed_minutes}분")
-    if snap.checklist:
-        st.markdown("**체크리스트**")
-        for key, done in snap.checklist.items():
-            st.markdown(f"{'☑' if done else '☐'} {key}")
-    st.caption(f"thread: `{st.session_state.thread_id}` · {st.session_state.turn_count}턴")
+    render_state_panel(StateSnapshot.model_validate(st.session_state.snapshot))
+    st.divider()
+    st.caption(f"{st.session_state.turn_count}턴 · thread `{st.session_state.thread_id}`")
 
 if not os.getenv("OPENAI_API_KEY"):
     st.error("OPENAI_API_KEY 환경변수가 없습니다. 설정 후 다시 실행하세요.")
