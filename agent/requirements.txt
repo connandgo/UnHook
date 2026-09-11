@@ -1,6 +1,5 @@
-# Shared contracts and Agent Core runtime.
 langchain==1.4.0
 langchain-openai==1.6.2
 langgraph==1.2.11
 pydantic==2.13.5
-typing_extensions==4.16.0
+pytest==9.1.1
