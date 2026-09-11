@@ -523,6 +523,22 @@ flowchart TD
   `LOOKUP_TOOL_NAMES`(`check_url_risk`, `verify_caller_number`)를 사용한다.
   판정부는 Tool과 분리해 `analyze_url()`, `verify_number()`로 두었으므로 네트워크 없이
   단독 호출·테스트할 수 있다.
+- `check_url_risk`의 `risk_score`는 신호를 두 부류로 나눠 산출한다.
+  단독으로 확정에 가까운 **결정적 신호**(`blacklist` 100, `at_sign` 90, `punycode` 60,
+  `ip_host` 55)는 하한선을 세우고, 혼자서는 의심에 그치는 **보강 신호**(`lookalike` 25,
+  `suspicious_tld` 20, `shortener` 15, `short_path` 10)는 누적한다.
+  `risk_score = min(max(결정적 하한, 보강 합계), 100)`.
+  단순 합산을 쓰지 않는 이유는 두 가지다. 같은 스미싱 킷에서 한 세트로 나오는
+  신호(`.top` + 유사 도메인 + 단축 경로)를 여러 번 세게 되고, 실제 접속지를 바꾸는
+  `@` 위장이 `.top` 하나와 같은 무게가 되기 때문이다.
+  점수가 100에 포화해도 `signals`에는 탐지된 근거를 모두 남긴다(2.4 evidence 최소 1개).
+- 유사 도메인 판정은 `_LEGIT_DOMAINS` 화이트리스트를 먼저 본다. 브랜드 부분 문자열
+  매칭만으로는 `cjlogistics.com`(CJ대한통운 정식 도메인)·`kakaostory.com`을 사칭으로
+  잡는다. 화이트리스트를 통과하지 못한 호스트는 최상위 TLD를 제외한 전체에서 브랜드를
+  찾으므로 `kakao.com.evil.ru`처럼 하위 도메인에 브랜드를 넣은 위장도 탐지된다.
+  브랜드·정상 도메인 목록 확장은 `tools.py` 상단 상수만 수정하면 된다.
+- `risk_score`는 `risk_level`이 아니다. 2.4의 `risk_level`은 `DamageStateMiddleware`가
+  피해 단계와 함께 산출하며, `risk_score`는 그 판단에 들어가는 근거 중 하나다.
 - `verify_caller_number`의 인증키 환경변수는 `FSS_FINLIFE_API_KEY`로 확정한다.
   키가 없거나 조회가 `FINLIFE_MAX_ATTEMPTS`회 실패하면 `is_official=None`을 돌려주며,
   이 값을 `unverified`에 기록하는 것은 호출부의 책임이다.
@@ -628,3 +644,4 @@ URL 검사는 `urllib.parse`로 경로·쿼리의 검사 사본만 한 번 디�
 | 2026-09-11 | 잔여 불일치 정리 — 2.4에 `damage_flags`(`DamageFlags`)·`ActionStep` 정의 추가, 3.1에 `checklist`·`pii_vault`·`incident_report` State 추가 및 `info_exposed`로 개명, `channel`을 State로 통일, `EmergencyRoute`의 `jump_to="end"` 즉시 종료를 제거하고 `before_agent`(조회 Tool 비활성화) + `after_agent`(첫 줄 고정)로 재정의, 4.2 TS-04-C001 Tool 호출 조건 정정 |
 | 2026-09-11 | 작업 묶음 5 구현 — `tools.py`(Tool 4종, 판정부 분리), `memory.py`(Store 이력 저장·대조, 전화번호 해시화), `data/kisa_urls.csv` 테스트 데이터, `tests/test_tools_memory.py`. `FSS_FINLIFE_API_KEY` 환경변수명 확정, 5절에 묶음 5 공유 계약 추가 |
 | 2026-09-11 | 작업 묶음 4 구현 — `pii.py`(주민번호·카드 마스킹, 사기범 계좌·전화번호 토큰화, Tool 인자 토큰 복원), `audit.py`(G5 단정·안심 표현 완화, G6 판정 보류, 출력 PII 가림, 질문 1개 제한, 스키마 실패 시 안전 응답). 3.2 `PIIMiddleware`를 Custom·`before_agent`+`before_model`+`wrap_tool_call`로 변경하고 `after_model` 역순 실행에 따른 등록 순서 명시, 3.3 G4·G5 판별 방식 갱신, 5절 공유 계약 추가 |
+| 2026-09-11 | `check_url_risk` 점수 산출을 단순 합산에서 결정적 신호 하한 + 보강 신호 누적 구조로 변경하고 5절에 규칙 명시. 유사 도메인 판정에 정상 도메인 화이트리스트를 도입해 정식 도메인 오탐을 제거하고, 브랜드 비교 범위를 호스트 전체로 넓혀 하위 도메인 위장을 탐지 |
