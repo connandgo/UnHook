@@ -4,12 +4,12 @@
 
 ## 포함 범위
 
-- `gpt-5-nano` 기본 모델과 `gpt-5` 검토 모델 설정
+- `gpt-5-nano` 단일 모델의 기본·재검토 프로필 설정
 - LangChain `create_agent` 조립
 - `ScamAssessment`, `DamageFlags`, `ActionStep` Structured Output
 - 신뢰할 수 없는 `quoted_content`를 JSON 데이터로 격리하는 프롬프트
-- 긴 입력·긴 대화·복합 유형·Tool 충돌·낮은 신뢰도에 대한 gpt-5 승격
-- 송금 피해 시 gpt-5 승격 억제 및 조회형 Tool 제거
+- 긴 입력·긴 대화·복합 유형·Tool 충돌·낮은 신뢰도에 대한 nano 재검토
+- 송금 피해 시 추가 재검토 억제 및 조회형 Tool 제거
 - 신고 Tool을 사용자 승인 전 모델에서 제거
 - 모델·Tool 호출 횟수와 LangGraph 반복 제한
 - 동기 `invoke`와 비동기 `ainvoke`
@@ -103,7 +103,7 @@ middlewares = build_middleware()
 
 ## 모델 선택
 
-다음 조건 중 하나면 처음부터 `gpt-5`를 사용한다.
+다음 조건 중 하나면 `gpt-5-nano` 재검토 프로필을 사용한다.
 
 - 입력 4,000자 이상
 - 여러 메시지를 한 번에 입력
@@ -113,9 +113,9 @@ middlewares = build_middleware()
 - 이전 출력 감사 실패
 
 `gpt-5-nano` 결과의 `confidence < 0.7`이거나 같은 턴의 출력 감사에서 복구하지 못한
-위반이 발견되면 nano 평가 결과를 함께 전달해 한 번 `gpt-5`로 재검토한다. 기존 State의
+위반이 발견되면 nano 평가 결과를 함께 전달해 한 번 더 `gpt-5-nano`로 재검토한다. 기존 State의
 `money_sent=True`이거나 현재 사용자 진술에서 송금 완료 표현이 감지되면 조회형 Tool과
-gpt-5 승격을 막고 nano를 유지한다.
+추가 재검토를 막고 첫 nano 결과를 유지한다.
 
 ## 입력 경계
 

@@ -278,6 +278,27 @@ def test_review_model_budget_includes_reasoning_and_structured_output():
     assert agent.review_model.max_tokens == 4096
 
 
+def test_default_and_review_profiles_use_only_nano():
+    settings = AgentSettings(api_key="test-placeholder")
+    agent = build_unhook_agent(settings=settings)
+
+    assert settings.nano_model == "gpt-5-nano"
+    assert settings.review_model == "gpt-5-nano"
+    assert agent.nano_model.model_name == "gpt-5-nano"
+    assert agent.review_model.model_name == "gpt-5-nano"
+    assert settings.nano_timeout_seconds == 60
+    assert settings.review_timeout_seconds == 60
+
+
+def test_environment_cannot_switch_review_profile_to_gpt5(monkeypatch):
+    monkeypatch.setenv("UNHOOK_NANO_MODEL", "gpt-5-nano")
+    monkeypatch.setenv("UNHOOK_REVIEW_MODEL", "gpt-5")
+
+    settings = AgentSettings.from_env()
+    assert settings.nano_model == "gpt-5-nano"
+    assert settings.review_model == "gpt-5-nano"
+
+
 def test_explicit_empty_middleware_disables_guarded_input():
     agent = build_unhook_agent(
         settings=AgentSettings(api_key="test-placeholder"),

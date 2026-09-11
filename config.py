@@ -11,11 +11,11 @@ from dataclasses import dataclass
 from typing import Final
 
 DEFAULT_MODEL: Final[str] = "gpt-5-nano"
-ESCALATION_MODEL: Final[str] = "gpt-5"
+ESCALATION_MODEL: Final[str] = DEFAULT_MODEL
 LOW_CONFIDENCE_THRESHOLD: Final[float] = 0.7
 LONG_INPUT_CHAR_THRESHOLD: Final[int] = 4_000
 LONG_CONVERSATION_TURN_THRESHOLD: Final[int] = 6
-DEFAULT_MODEL_TIMEOUT_SECONDS: Final[int] = 20
+DEFAULT_MODEL_TIMEOUT_SECONDS: Final[int] = 60
 DEFAULT_MODEL_MAX_OUTPUT_TOKENS: Final[int] = 800
 REVIEW_MODEL_MAX_OUTPUT_TOKENS: Final[int] = 4096
 GUARD_MAX_INPUT_CHARS: Final[int] = 12_000
@@ -29,7 +29,7 @@ class AgentSettings:
     nano_model: str = DEFAULT_MODEL
     review_model: str = ESCALATION_MODEL
     nano_timeout_seconds: float = DEFAULT_MODEL_TIMEOUT_SECONDS
-    review_timeout_seconds: float = 30.0
+    review_timeout_seconds: float = 60.0
     nano_max_output_tokens: int = DEFAULT_MODEL_MAX_OUTPUT_TOKENS
     # gpt-5 counts hidden reasoning tokens against max_completion_tokens.
     # Medium reasoning can consume the old 1,200-token budget before emitting JSON.
@@ -43,10 +43,11 @@ class AgentSettings:
 
     @classmethod
     def from_env(cls) -> "AgentSettings":
+        nano_model = os.getenv("UNHOOK_NANO_MODEL") or DEFAULT_MODEL
         return cls(
             api_key=os.getenv("OPENAI_API_KEY") or None,
-            nano_model=os.getenv("UNHOOK_NANO_MODEL") or DEFAULT_MODEL,
-            review_model=os.getenv("UNHOOK_REVIEW_MODEL") or ESCALATION_MODEL,
+            nano_model=nano_model,
+            review_model=nano_model,
         )
 
     def require_api_key(self) -> str:
