@@ -10,3 +10,6 @@ __pycache__/
 .env.*
 !.env.example
 .venv/
+
+# Local-only security research (not part of the shared implementation)
+/docs/input-security-research.md

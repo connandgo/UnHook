@@ -1,6 +1,7 @@
 # Shared contracts; verified against the local course environment.
 # Add model, API, UI and RAG dependencies when those modules are implemented.
 langchain==1.4.0
+langchain-openai==1.6.1
 langgraph==1.2.11
 pydantic==2.13.5
 typing_extensions==4.16.0
