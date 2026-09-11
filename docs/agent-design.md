@@ -517,6 +517,14 @@ flowchart TD
   확정되지 않은 `incident_report`, `history_matches`, `tool_results` 내부는 임의의 필드를
   강제하지 않는다. 담당자가 계약을 확정하면 설계서와 타입을 함께 구체화한다.
 - Tool 반환 타입은 `URLRiskResult`, `CallerVerificationResult`, `PlaybookResult`를 사용한다.
+  `URLRiskResult`에는 필수 `status: URLStatus`를 추가한다. 기존 `blacklisted`, `risk_score`, `signals`는 유지한다.
+  `URLStatus`는 `confirmed`(목록 등록 확인), `suspicious`(위험 신호 탐지),
+  `unverifiable`(목적지 확인 불가), `clean`(검사 범위에서 알려진 신호 미탐지),
+  `malformed`(URL 형식 불명) 중 하나다. `clean`은 안전 인증이 아니다.
+  이번 변경은 공유 스키마 계약만 추가한다. 2.5의 기존 Tool 구현은 아직 status를 반환하지 않으며,
+  상태 산출 우선순위·점수 규칙 변경 및 반환값·fixture 갱신은 ⑤의 후속 구현에서 반영한다.
+  필수 키 추가는 결과 생산자의 타입 계약 변경이다. 기존 Tool을 새 계약으로 검증하면 실패할 수 있으므로
+  ①·②·④는 생산자 갱신 전 status가 항상 존재한다고 가정하지 않는다. 누락을 clean으로 기본 처리하지 않는다.
   `is_official`은 조회 실패 시 `None`을 허용한다. `report_to_authority` 반환은 2.5의 `bool`을 따른다.
   TypedDict는 정적 계약이므로 실제 외부 응답 검증은 Tool 구현에서 수행한다.
 - `ScamAssessment`는 confidence 범위, evidence 최소 개수, 조치 최대 개수와 우선순위 순서를 검증한다.
@@ -665,6 +673,7 @@ URL 검사는 `urllib.parse`로 경로·쿼리의 검사 사본만 한 번 디�
 
 | 일자 | 내용 |
 |---|---|
+| 2026-09-11 | 요청에 따라 공통 `URLStatus` 5종과 `URLRiskResult.status` 필수 필드 추가. 기존 3필드는 유지하며 Tool의 상태·점수 산출은 후속 작업으로 분리 |
 | 2026-09-11 | 위협 모델을 공격자 작성 원문·URL 문자열로 한정. 본문 삽입형·URL 삽입형 2개 공격 예시로 정리, URL 검사 사본 파싱 및 명시적 외부 원문 검사 반영 |
 | 2026-09-11 | ③ 입력 보안 구현 계약(5.1) 추가. 짧은 외부 원문도 격리, 마스킹된 메시지 준비 함수, 요청별 `input_guard`, 구조화 판별 및 최종 출력 보강, 3개 사용자 흐름 정의 |
 | 2026-09-11 | 공통 `config.py`와 `.env.example` 추가. README에 구현 상태와 작업 번호를 표시한 디렉터리 트리 추가, `memory.py`와 `MemoryInjectMiddleware`의 파일별 책임 구분 반영 |

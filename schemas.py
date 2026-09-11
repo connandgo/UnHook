@@ -53,7 +53,11 @@ class ScamAssessment(BaseModel):
         return self
 
 
+URLStatus = Literal["confirmed", "suspicious", "unverifiable", "clean", "malformed"]
+
+
 class URLRiskResult(TypedDict):
+    status: URLStatus
     blacklisted: bool
     risk_score: int
     signals: list[str]
