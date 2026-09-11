@@ -540,10 +540,16 @@ flowchart TD
   `URLStatus`는 `confirmed`(목록 등록 확인), `suspicious`(위험 신호 탐지),
   `unverifiable`(목적지 확인 불가), `clean`(검사 범위에서 알려진 신호 미탐지),
   `malformed`(URL 형식 불명) 중 하나다. `clean`은 안전 인증이 아니다.
-  이번 변경은 공유 스키마 계약만 추가한다. 2.5의 기존 Tool 구현은 아직 status를 반환하지 않으며,
-  상태 산출 우선순위·점수 규칙 변경 및 반환값·fixture 갱신은 ⑤의 후속 구현에서 반영한다.
-  필수 키 추가는 결과 생산자의 타입 계약 변경이다. 기존 Tool을 새 계약으로 검증하면 실패할 수 있으므로
-  ①·②·④는 생산자 갱신 전 status가 항상 존재한다고 가정하지 않는다. 누락을 clean으로 기본 처리하지 않는다.
+  `check_url_risk`는 status를 항상 채운다. 판정 우선순위는 위에서부터 먼저 적용한다 —
+  ① URL 파싱 실패 → `malformed`, ② `blacklisted=True` → `confirmed`,
+  ③ 단축 URL 외의 신호가 하나라도 있음 → `suspicious`, ④ 단축 URL 신호만 있음 → `unverifiable`,
+  ⑤ 그 외 → `clean`. 단축 URL이어도 다른 신호가 있으면 `suspicious`가 이긴다.
+  판단 보류보다 탐지된 위험이 우선이기 때문이다.
+  `risk_score`는 **탐지된 위험의 세기**만 뜻한다. `unverifiable`·`clean`·`malformed`는 0이다.
+  따라서 `clean`과 `unverifiable`은 점수가 같고 status로만 구분된다 — 이 구분이 status를 둔 이유다.
+  단축 URL 가중치는 제거했다. 위험한 것이 아니라 목적지를 판단할 수 없는 것이므로 점수로 표현하면
+  "낮은 위험"과 구분되지 않는다 (1.5 안정성).
+  누락을 `clean`으로 기본 처리하지 않는다. `clean`은 안전 인증이 아니다.
   `is_official`은 조회 실패 시 `None`을 허용한다. `report_to_authority` 반환은 2.5의 `bool`을 따른다.
   TypedDict는 정적 계약이므로 실제 외부 응답 검증은 Tool 구현에서 수행한다.
 - `ScamAssessment`는 confidence 범위, evidence 최소 개수, 조치 최대 개수와 우선순위 순서를 검증한다.
@@ -716,4 +722,5 @@ URL 검사는 `urllib.parse`로 경로·쿼리의 검사 사본만 한 번 디�
 | 2026-09-11 | 작업 묶음 5 — Tool 반환값의 외부 문자열 정제(`audit.mask_output_pii` 재사용, 제어문자·길이 제한) 추가. 문구 대조에서 URL·숫자열을 제거하고 판정을 최장 공통 부분문자열에서 LCS 비율 방식으로 교체, 표시값을 유사도(%)로 변경. 근거 문장의 조사 처리 수정 |
 | 2026-09-11 | 작업 묶음 2 — `middleware.py` 구현(`DamageState`·`EmergencyRoute`·`MemoryInject`)과 `build_middleware()` 조립. 3.1에 `emergency_mode` State 추가. `EmergencyRoute`의 Hook을 `before_agent` + `wrap_model_call` + `after_agent`로 정정 — Tool 목록은 `ModelRequest`에만 있어 `before_agent`에서 끌 수 없다. "응답 첫 줄 고정"을 `immediate_actions[0]` 고정으로 정정 — 구조화 출력에서는 AIMessage 본문이 비어 있고 4.2 TS-02-C003도 `immediate_actions[0]`을 기대한다(1.3 S3·2.1·2.2·3.2·3.3 G1·4.2 연쇄 수정). 2.5에 `risk_level` 산출식과 `STAGE_RISK_FLOOR` 표 추가 — TS-04-C001이 Tool 0회·`damage_stage=none`에서 `critical`을 요구하므로 모델 판정을 입력으로 쓰고 미들웨어는 하한과 단조 증가를 강제한다. 2.5 checklist 키를 `playbook_fallback.json`의 `step_keys`·`step_order`로 확정 |
 | 2026-09-11 | 작업 묶음 4를 입력 보안(5.1)과 연결 — `pii.prepare_masked_input`·`make_guard_masker`·`neutralize_tokens` 추가, 본문 구분자 기반 출처 추정 제거(`source` 인자), guards 입력 JSON 형식 유지 마스킹, URL 퍼센트 인코딩 번호 마스킹, Tool 결과는 주민번호·카드번호만 재검사, `awrap_tool_call` 추가. `OutputAuditMiddleware.after_agent` 최종 검사 추가. FR-08·3.1 `report_history`를 본인 이력으로 한정(사용자 간 조회 제외). 3.2·3.3 G4·5절·5.1 갱신, Checkpointer·Store 생성(묶음 2 제공, 묶음 1 전달) 명시, `mask_output_pii` 시그니처 유지 명시, `tests/test_pii_audit.py` 추가 |
+| 2026-09-11 | 작업 묶음 5 — `check_url_risk`가 `URLRiskResult.status`를 산출하도록 구현. 판정 우선순위와 `risk_score` 의미 축소(`unverifiable`·`clean`·`malformed`는 0)를 5절에 명시하고 단축 URL 가중치를 제거. 공유 스키마 계약(PR #11)의 생산자 갱신을 완료 |
 | 2026-09-11 | 작업 묶음 2 — `middleware.py`에 `build_checkpointer()`·`build_store()` 추가(5절 626줄 반영 요구). 5절 파일 책임 표에 Checkpointer·Store 제공을 명시 |

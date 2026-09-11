@@ -28,7 +28,9 @@ from typing import Any
 from langchain.tools import ToolRuntime, tool
 
 import memory
-from schemas import CallerVerificationResult, PlaybookResult, URLRiskResult
+from schemas import (
+    CallerVerificationResult, PlaybookResult, URLRiskResult, URLStatus,
+)
 
 # 외부 문자열 1건의 상한. 초과분은 자른다. 조회 결과 식별에는 충분하고,
 # 오염된 응답이 프롬프트를 밀어내는 것을 막는다.
@@ -66,11 +68,13 @@ _DECISIVE_SCORES = {
 _CUMULATIVE_SCORES = {
     "lookalike": 25,
     "suspicious_tld": 20,
-    # 단축 URL은 위험한 것이 아니라 목적지를 판단할 수 없는 것이다.
-    # 정상 기업도 쓰므로 낮게 두고, signals에 확인 불가를 명시한다 (설계서 1.5 안정성).
-    "shortener": 15,
     "short_path": 10,
 }
+
+# 단축 URL은 위험한 것이 아니라 목적지를 판단할 수 없는 것이다. 정상 기업도 쓴다.
+# 점수로 표현하면 "낮은 위험"과 구분되지 않으므로 status="unverifiable"이 대신한다
+# (설계서 1.5 안정성, 5절 URLStatus).
+_UNVERIFIABLE_SIGNAL = "단축 URL 서비스 도메인 (실제 목적지 확인 불가)"
 
 # 설계서 1.3 S1: 비정상 TLD. 실습 범위에서 자주 쓰이는 목록만 둔다.
 _SUSPICIOUS_TLDS = {
@@ -221,15 +225,23 @@ def analyze_url(url: str) -> URLRiskResult:
 
     결정적 신호는 하한선을, 보강 신호는 누적 합계를 만들고 둘 중 큰 값을 쓴다.
     점수가 포화해도 signals에는 탐지된 근거를 모두 남긴다 (설계서 2.4 evidence).
+
+    `status`는 "판단 불가"를 점수와 구분하기 위한 값이다. 검사 후 깨끗한 `clean`과
+    목적지를 보지 못한 `unverifiable`은 둘 다 점수가 0이지만 의미가 정반대다
+    (설계서 5절 URLStatus).
     """
     host, path = _split_url(url)
     if not host:
         # 설계서 2.5: 형식 불명 URL이면 risk_score=0, signals=["형식 불명"].
-        return URLRiskResult(blacklisted=False, risk_score=0, signals=["형식 불명"])
+        return URLRiskResult(
+            status="malformed", blacklisted=False, risk_score=0,
+            signals=["형식 불명"],
+        )
 
     signals: list[str] = []
     decisive = 0
     cumulative = 0
+    shortener = False
 
     def hit_decisive(key: str, message: str) -> None:
         nonlocal decisive
@@ -260,9 +272,9 @@ def analyze_url(url: str) -> URLRiskResult:
         hit_cumulative("suspicious_tld", f"비정상 TLD .{tld}")
 
     if host in _SHORTENER_HOSTS:
-        hit_cumulative(
-            "shortener", "단축 URL 서비스 도메인 (실제 목적지 확인 불가)"
-        )
+        # 점수를 올리지 않는다. 위험 판정이 아니라 판단 보류다.
+        shortener = True
+        signals.append(_UNVERIFIABLE_SIGNAL)
 
     # 알려진 정상 도메인은 브랜드 부분 문자열 매칭에서 제외한다.
     # cjlogistics.com은 CJ대한통운의 정식 도메인이지 사칭이 아니다.
@@ -279,14 +291,36 @@ def analyze_url(url: str) -> URLRiskResult:
     if trimmed and len(trimmed) <= 3 and "/" not in trimmed:
         hit_cumulative("short_path", "단축형 경로")
 
+    status = _resolve_status(blacklisted, decisive, cumulative, shortener)
+    if status in ("unverifiable", "clean"):
+        # 위험을 탐지하지 못한 상태다. 점수로 위험의 세기를 말하지 않는다.
+        score = 0
+    else:
+        score = min(max(decisive, cumulative), 100)
+
     if not signals:
         signals.append("알려진 위험 신호 없음")
 
     return URLRiskResult(
-        blacklisted=blacklisted,
-        risk_score=min(max(decisive, cumulative), 100),
-        signals=signals,
+        status=status, blacklisted=blacklisted, risk_score=score, signals=signals
     )
+
+
+def _resolve_status(
+    blacklisted: bool, decisive: int, cumulative: int, shortener: bool
+) -> URLStatus:
+    """설계서 5절 판정 우선순위. 위에서부터 먼저 적용한다.
+
+    `malformed`는 호출부에서 이미 처리했다. 단축 URL은 다른 신호가 하나라도 있으면
+    `suspicious`가 이긴다 — 판단 보류보다 탐지된 위험이 우선이다.
+    """
+    if blacklisted:
+        return "confirmed"
+    if decisive or cumulative:
+        return "suspicious"
+    if shortener:
+        return "unverifiable"
+    return "clean"
 
 
 @tool
