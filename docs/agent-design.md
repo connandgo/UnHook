@@ -143,7 +143,7 @@ Middleware는 실행 중간에 로직을 넣는 위치와 방법이다. Guardrai
 |---|---|---|
 | 1. 입력 보호 | 개인정보를 마스킹하고 붙여넣은 원문과 사용자 진술을 구분한다. 형식 오류나 마스킹 실패 시 재입력 안내를 반환한다. | 정제된 입력으로만 진행 |
 | 2. 상태 반영 | 같은 `thread_id`의 이전 State와 현재 답변을 결합한다. 명시적 사실을 먼저 반영하고, 모호한 내용은 미확인으로 남긴다. 새 세션 첫 턴이거나 입력에 문구·도메인·번호가 있으면 Store의 과거 신고 이력과 대조해 일치 항목을 `history_matches`에 기록한다. | 긴급 여부 확인 |
-| 3. 긴급 분기 | 새 송금 피해가 감지되면 이번 턴의 외부 조회 Tool을 비활성화하고 gpt-5 승격을 막는다. `immediate_actions[0]`에 지급정지 조치를 고정하며, 경과시간·송금액 추가 질문 때문에 안내를 늦추지 않는다. | 모델 판단 (조회 없이) |
+| 3. 긴급 분기 | 새 송금 피해가 감지되면 이번 턴의 외부 조회 Tool을 비활성화하고 추가 모델 재검토를 막는다. `immediate_actions[0]`에 지급정지 조치를 고정하며, 경과시간·송금액 추가 질문 때문에 안내를 늦추지 않는다. | 모델 판단 (조회 없이) |
 | 4. 모델 판단 | 필요한 사실과 조회 가능 여부를 확인한다. 해석 과정에서 새 송금 피해가 확인되면 긴급 경로로 이동한다. | 도구 조회 / 질문 / 대응 안내 |
 | 5. 도구 조회 | 필요한 입력값이 있는 도구만 호출한다. 결과와 오류를 State에 반영하고 모델이 다시 판단한다. | 같은 실행 안에서 4단계 반복 |
 | 6. 추가 질문 | `next_question`에 질문 하나를 담아 응답한다. 송금 중단 등 지금 가능한 예방 조치도 함께 제시한다. | 이번 실행 종료, 사용자 답변 대기 |
@@ -174,18 +174,18 @@ Middleware는 실행 중간에 로직을 넣는 위치와 방법이다. Guardrai
 |---|---|---|
 | **gpt-5-nano**<br>(기본 모델) | 모델 선정 이유 | 금융사기 유형 분류, 위험 신호 추출, 피해 단계 갱신, 간단한 추가 질문 생성처럼 짧고 반복적인 작업을 빠르게 처리하기 위해 기본 모델로 사용한다. 대부분의 일반적인 요청을 nano에서 완료하여 응답시간과 비용을 줄인다. |
 | | 주요 역할 | 사용자 입력 분석, 사기 유형 분류, URL·전화번호 등 필요한 Tool 선택, 피해 단계 갱신, 위험도 산정, Structured Output 생성 |
-| | 주요 설정 | `model="gpt-5-nano"`<br>`reasoning_effort="minimal"` 또는 `"low"`<br>`timeout=20`<br>`max_output_tokens=800` |
+| | 주요 설정 | `model="gpt-5-nano"`<br>`reasoning_effort="minimal"` 또는 `"low"`<br>`timeout=60`<br>`max_output_tokens=800` |
 | | 처리 대상 | 단일 문자 또는 URL 분석, 명확한 스미싱 패턴, 간단한 기관 사칭 확인, 피해가 발생하지 않은 일반 문의, 기존 State에 따라 다음 질문을 선택할 수 있는 경우 |
 | | 제약사항 | 판단 근거가 부족하면 임의로 결론을 만들지 않는다. `risk_level="insufficient_info"`로 처리하고 한 번에 하나의 추가 질문만 생성한다. |
-| **gpt-5**<br>(보조 모델, 구현 범위 △) | 모델 선정 이유 | 입력량이 많거나 여러 사기 유형이 섞인 경우, Tool 결과가 충돌하는 경우처럼 더 정교한 추론이 필요할 때만 사용한다. |
+| **gpt-5-nano**<br>(재검토 프로필) | 모델 선정 이유 | 단일 모델 운영을 유지하면서 입력량이 많거나 여러 사기 유형이 섞인 경우, Tool 결과가 충돌하는 경우에 한 번 더 검토한다. |
 | | 주요 역할 | 긴 대화 내역 분석, 복합 사기 유형 판정, 상충하는 근거 비교, 낮은 신뢰도의 2차 검토, 고위험 상황의 출력 감사 |
-| | 주요 설정 | `model="gpt-5"`<br>`reasoning_effort="medium"`<br>`timeout=30`<br>`max_output_tokens=1200` |
+| | 주요 설정 | `model="gpt-5-nano"`<br>`reasoning_effort="medium"`<br>`timeout=60`<br>`max_output_tokens=4096` (추론 토큰 포함) |
 | | 호출 조건 | 아래 승격 조건 중 하나 이상을 만족하는 경우에만 호출한다. |
 | | 제약사항 | nano가 수집한 State와 Tool 결과를 근거로 판단한다. 이미 확인된 정보를 다시 질문하지 않으며, 근거가 없는 내용을 새로 만들어내지 않는다. |
 | **공통** | 출력 형식 | 두 모델 모두 동일한 `ScamAssessment` Structured Output 스키마를 사용한다. 따라서 모델이 전환되더라도 후속 Middleware와 UI는 동일한 형식으로 결과를 처리한다. |
 | | 안전 원칙 | 사기 여부를 확정적으로 단정하지 않는다. 신고나 외부 전송은 사용자 승인 전에는 실행하지 않는다. 이미 송금한 경우 모델 승격보다 은행 콜센터 연락 안내를 우선한다. |
 
-#### gpt-5 승격 조건
+#### nano 재검토 조건
 
 다음 조건은 코드에서 가능한 한 규칙으로 판단하는 것이 좋다.
 
@@ -198,7 +198,7 @@ Middleware는 실행 중간에 로직을 넣는 위치와 방법이다. Guardrai
 | 신뢰도가 낮은 경우 | nano의 `confidence < 0.7` | 불확실한 판정을 보조 모델이 재검토 |
 | 출력 감사 실패 | 필수 필드 누락, 근거 없는 판정, 단정 표현 탐지 | 결과를 수정하여 스키마와 안전 규칙 준수 |
 
-> 단, `money_sent=True`이고 송금 직후라면 gpt-5로 승격하지 않고 Middleware가 즉시 지급정지 안내(예정)를 출력하는 편이 안전하다.
+> 단, `money_sent=True`이고 송금 직후라면 추가 재검토 없이 Middleware가 즉시 지급정지 안내를 출력하는 편이 안전하다.
 
 ### 2.4 Structured Output 설계
 
@@ -209,7 +209,7 @@ output명: `ScamAssessment`
 | `scam_type` | `Literal["smishing", "voice_phishing", "messenger_phishing", "loan_scam", "gov_impersonation", "investment_scam", "unknown"]` | 필수 | 지정된 유형만 허용. 1.2 FR-01의 5유형 + `unknown` | 사기 유형 분류 |
 | `risk_level` | `Literal["critical", "high", "medium", "low", "insufficient_info"]` | 필수 | 근거 부족 시 `insufficient_info` | 최종 위험도 |
 | `damage_stage` | `Literal["none", "link_clicked", "info_exposed", "app_installed", "money_sent"]` | 필수 | State와 동기화. `DamageStateMiddleware`가 산출한 값을 그대로 사용 | 현재 피해 단계 |
-| `confidence` | `float` | 필수 | 0.0 ~ 1.0 | nano 결과 사용 또는 gpt-5 승격 판단 (`< 0.7`이면 승격) |
+| `confidence` | `float` | 필수 | 0.0 ~ 1.0 | nano 결과 사용 또는 nano 재검토 판단 (`< 0.7`이면 재검토) |
 | `evidence` (verified_facts 포함) | `list[str]` | 필수 | 최소 1개 | signals, URL 검사 결과, 공식번호 조회 결과를 사람이 이해할 수 있는 문장으로 저장 |
 | `unverified` | `list[str]` | 필수 | 확인 불가 항목이 없으면 `[]` | `is_official=None` 등 Tool 실패·확인 불가 결과 저장 |
 | `immediate_actions` | `list[ActionStep]` | 필수 | 최대 5개, 우선순위 정렬 | steps를 사용자 행동으로 변환 |
@@ -352,7 +352,7 @@ risk_level = max(직전 턴 risk_level, 모델이 낸 risk_level, STAGE_RISK_FLO
 | `incident_report` | State | `dict \| None` | 모델 생성 | 사용자가 정리서 요청 시 | 모델 (생성), `report_to_authority` (`summary` 입력) | 타임라인·사기범 계좌(토큰)·피해 금액을 담은 신고용 정리서 | ○ |
 | `history_matches` | State | `list[dict]` | `report_history`와 이번 입력의 도메인·번호·문구 대조 결과 | 새 세션 첫 턴 또는 입력에 문구·도메인·번호가 있을 때 | `MemoryInjectMiddleware` (`before_agent` 쓰기, `wrap_model_call` 읽기) | 일치 항목을 시스템 프롬프트에 주입해 반복 피해 경고·evidence 근거로 사용. 마스킹된 요약만 담고 PII 원문은 포함하지 않음 | △ |
 | `input_guard` | State (요청별) | `InputGuardResult \| None` | 규칙 선필터와 구조화 판별 결과 | 새 사용자 메시지마다 갱신 | `TopicFilterMiddleware`, `InjectionGuardMiddleware` | 메시지 ID·판별 상태·고정 사유 코드만 저장. 초기값 None, 상세 계약은 5.1 | ○ |
-| `emergency_mode` | State (임시) | `bool` | 입력 텍스트의 완료형 송금 표현 또는 `money_sent=True` | 매 turn (`before_agent`에서 항상 덮어씀) | `EmergencyRouteMiddleware` (`before_agent` 쓰기, `wrap_model_call` 읽기) | 조회형 Tool 비활성화·gpt-5 승격 억제의 트리거. hook 간 전달용이며 판정 근거로 저장하지 않는다 | ○ |
+| `emergency_mode` | State (임시) | `bool` | 입력 텍스트의 완료형 송금 표현 또는 `money_sent=True` | 매 turn (`before_agent`에서 항상 덮어씀) | `EmergencyRouteMiddleware` (`before_agent` 쓰기, `wrap_model_call` 읽기) | 조회형 Tool 비활성화·추가 재검토 억제의 트리거. hook 간 전달용이며 판정 근거로 저장하지 않는다 | ○ |
 | `report_history` | Store (장기) | `list[dict]` (최근 5건) | 과거 세션 누적 (`user_id`별 본인 이력만, 사용자 간 조회 없음) | 세션 간 영속 | `MemoryInjectMiddleware` (`before_agent`, 읽기) | 재접근 시 반복 피해 경고 | △ |
 
 #### 핵심 원칙
@@ -371,7 +371,7 @@ Hook 종류: `before_agent`(호출 시 1회) → `before_model`(모델 호출 �
 
 | Middleware 이름 | Hook 지점 | 목적 | 개입 대상 | 트리거 조건 | 실패/예외 시 동작 | 구분 | 구현 |
 |---|---|---|---|---|---|---|---|
-| `EmergencyRouteMiddleware` | `before_agent` + `wrap_model_call` + `after_agent` | 송금 피해 긴급 분기. `before_agent`: 입력 텍스트 규칙(완료형 송금·이체 표현) 또는 `money_sent=True`이면 State `emergency_mode`를 켠다. `wrap_model_call`: `emergency_mode`이면 이번 턴의 조회형 Tool(`check_url_risk`·`verify_caller_number`)을 `ModelRequest.tools`에서 제외한다. gpt-5 승격 억제도 같은 플래그를 본다. `after_agent`: `money_sent=True`이고 `checklist["지급정지 요청"]`이 미완료면 `immediate_actions[0]`에 지급정지 조치를 고정한다 | State `emergency_mode`, 이번 턴의 Tool 목록, `structured_response.immediate_actions` | `money_sent=True` (`elapsed_minutes`는 안내 문구의 긴급도 조절에만 사용) | 판정 실패 시 통상 흐름으로 진행 | Custom | ○ |
+| `EmergencyRouteMiddleware` | `before_agent` + `wrap_model_call` + `after_agent` | 송금 피해 긴급 분기. `before_agent`: 입력 텍스트 규칙(완료형 송금·이체 표현) 또는 `money_sent=True`이면 State `emergency_mode`를 켠다. `wrap_model_call`: `emergency_mode`이면 이번 턴의 조회형 Tool(`check_url_risk`·`verify_caller_number`)을 `ModelRequest.tools`에서 제외한다. 추가 재검토 억제도 같은 플래그를 본다. `after_agent`: `money_sent=True`이고 `checklist["지급정지 요청"]`이 미완료면 `immediate_actions[0]`에 지급정지 조치를 고정한다 | State `emergency_mode`, 이번 턴의 Tool 목록, `structured_response.immediate_actions` | `money_sent=True` (`elapsed_minutes`는 안내 문구의 긴급도 조절에만 사용) | 판정 실패 시 통상 흐름으로 진행 | Custom | ○ |
 | `TopicFilterMiddleware` | `before_agent` | 명확한 무관 요청에 범위 안내, 정상 후속 답변 보존 (3.3 G2) | 마스킹된 입력, 이전 질문, State | 문맥 및 규칙 검사 | 불확실한 요청은 계속 처리 | Custom | ○ |
 | `InjectionGuardMiddleware` | `before_agent` + `after_agent` | 규칙으로 의심 입력을 선별하고 판별 모델 호출, 최종 구조화 출력에 탐지 결과 반영 | `input_guard`, `structured_response` | 의심 패턴이 있을 때만 판별 모델 호출 | `unavailable`로 기록, 상담 및 원문 격리 유지. 오류 원문은 로깅하지 않음 | Custom | ○ |
 | `ContentIsolationMiddleware` | `wrap_model_call` | 원문·진술의 구조화 경계를 유지하고 고정 보안 지시 추가 | 모델에 전달할 메시지 사본 | 매 모델 호출, 길이 무관 | 준비되지 않은 입력은 예외로 중단 | Custom | ○ |
@@ -503,13 +503,13 @@ flowchart TD
 ### 공유 코드 사용 규칙
 
 - 전체 디렉터리 트리는 [README](../README.md#디렉터리-구조)를 참조한다.
-- `config.py`의 `DEFAULT_MODEL="gpt-5-nano"`, `ESCALATION_MODEL="gpt-5"`,
+- `config.py`의 `DEFAULT_MODEL="gpt-5-nano"`, `ESCALATION_MODEL="gpt-5-nano"`,
   `LOW_CONFIDENCE_THRESHOLD=0.7`, `LONG_INPUT_CHAR_THRESHOLD=4000`,
   `LONG_CONVERSATION_TURN_THRESHOLD=6`을 공통으로 사용한다.
   신뢰도는 기준 미만, 입력 문자 수와 대화 턴 수는 기준 이상일 때 해당 조건을 만족한다.
   여러 메시지 입력, 복합 유형, 근거 충돌, 감사 실패 조건과 긴급 분기의 승격 억제는
   Agent/Middleware에서 별도로 구현한다. 설정 파일 자체는 모델 선택을 수행하지 않는다.
-  nano 판별기는 `DEFAULT_MODEL_TIMEOUT_SECONDS=20`, `DEFAULT_MODEL_MAX_OUTPUT_TOKENS=800`을 사용한다.
+  nano 판별기는 `DEFAULT_MODEL_TIMEOUT_SECONDS=60`, `DEFAULT_MODEL_MAX_OUTPUT_TOKENS=800`을 사용한다.
   입력 준비 한도는 `GUARD_MAX_INPUT_CHARS=12000`이다. 전체 Agent 호출 상한, 외부 Tool 재시도는 담당자 확정 후 추가한다.
   RAG 설정(임베딩 모델명, 임계치, k)은 `config.py`가 아니라 `rag.py` 상단 상수로 둔다(2.5 RAG 구성).
 - `.env.example`은 키 이름을 공유하는 템플릿이다. 실제 키는 환경변수로 전달하며,
@@ -683,7 +683,7 @@ URL 검사는 `urllib.parse`로 경로·쿼리의 검사 사본만 한 번 디�
   애매한 입력, 공격 문구를 포함한 상담, 문맥상 짧은 답변은 계속 처리한다. 이미 확인된 송금·앱 설치 피해는
   이 필터로 종료하지 않아 ② 담당 긴급 안내 경로를 보존한다.
 - 인젝션 판별기는 nano의 독립적인 구조화 출력 호출이며 업무 Tool·Store·PII vault에 접근하지 않는다.
-  기본 설정은 `timeout=20`, 최대 출력 토큰 800, 자동 재시도 0회다. 타임아웃·파싱 오류는 미탐지와 구분한다.
+  기본 설정은 `timeout=60`, 최대 출력 토큰 800, 자동 재시도 0회다. 타임아웃·파싱 오류는 미탐지와 구분한다.
   규칙에서 선별되지 않은 공격은 판별되지 않을 수 있으며, 격리는 탐지 여부에 관계없이 유지한다.
 - `after_agent`는 `structured_response`의 `injection_detected`, 고정 탐지 근거 및 판별 불가 정보를 보강한다.
   위험도·피해 플래그·승인 여부는 변경하지 않는다. UI는 최종 `structured_response`를 사용하며,
@@ -705,6 +705,8 @@ URL 검사는 `urllib.parse`로 경로·쿼리의 검사 사본만 한 번 디�
 
 | 일자 | 내용 |
 |---|---|
+| 2026-09-11 | 사용자 요청에 따라 메인·재검토 모델을 모두 `gpt-5-nano`로 통일하고 OpenAI 요청 timeout을 60초로 조정. 기존 재검토 조건은 같은 nano 모델의 별도 프로필로 유지 |
+| 2026-09-11 | gpt-5 검토 모델의 `max_output_tokens`를 1,200에서 4,096로 조정. Responses API의 완료 한도에 숨은 추론 토큰도 포함되어 medium 추론이 구조화 JSON 생성 전에 한도를 소진하는 문제를 방지 |
 | 2026-09-11 | 요청에 따라 공통 `URLStatus` 5종과 `URLRiskResult.status` 필수 필드 추가. 기존 3필드는 유지하며 Tool의 상태·점수 산출은 후속 작업으로 분리 |
 | 2026-09-11 | 위협 모델을 공격자 작성 원문·URL 문자열로 한정. 본문 삽입형·URL 삽입형 2개 공격 예시로 정리, URL 검사 사본 파싱 및 명시적 외부 원문 검사 반영 |
 | 2026-09-11 | ③ 입력 보안 구현 계약(5.1) 추가. 짧은 외부 원문도 격리, 마스킹된 메시지 준비 함수, 요청별 `input_guard`, 구조화 판별 및 최종 출력 보강, 3개 사용자 흐름 정의 |

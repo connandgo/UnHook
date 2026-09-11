@@ -1,0 +1,5 @@
+langchain==1.4.0
+langchain-openai==1.6.2
+langgraph==1.2.11
+pydantic==2.13.5
+pytest==9.1.1

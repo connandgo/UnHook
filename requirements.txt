@@ -1,7 +1,6 @@
-# Shared contracts; verified against the local course environment.
-# Add model, API, UI and RAG dependencies when those modules are implemented.
+# Shared contracts and Agent Core runtime.
 langchain==1.4.0
-langchain-openai==1.6.1
+langchain-openai==1.6.2
 langgraph==1.2.11
 pydantic==2.13.5
 typing_extensions==4.16.0
