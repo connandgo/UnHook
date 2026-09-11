@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
@@ -10,9 +11,10 @@ from langchain.agents.middleware import (
     AgentMiddleware,
     ModelCallLimitMiddleware,
     ToolCallLimitMiddleware,
+    wrap_model_call,
 )
 from langchain.agents.structured_output import ProviderStrategy
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
@@ -35,6 +37,39 @@ ALLOWED_TOOL_NAMES = frozenset(
 )
 LOOKUP_TOOL_NAMES = frozenset({"check_url_risk", "verify_caller_number"})
 REPORT_TOOL_NAME = "report_to_authority"
+URL_TOOL_NAME = "check_url_risk"
+_URL_RE = re.compile(r"(?:https?|hxxps?)://[^\s<>\"']+|(?<![\w@.])[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}(?![\w])(?:/[^\s]*)?", re.IGNORECASE)
+
+
+@wrap_model_call
+def force_url_check(request, handler):
+    """Require check_url_risk on the first model call of a turn that contains a URL.
+
+    gpt-5-nano does not reliably pick the lookup on its own, and scenario S1
+    depends on the URL verdict. Only the first call is forced: once a
+    check_url_risk ToolMessage exists for this turn, the model is free again.
+    Emergency turns never reach here with the tool present (select_tools and
+    emergency_route_restrict remove it), so nothing is forced then.
+    """
+    if not any(_tool_name(tool) == URL_TOOL_NAME for tool in request.tools):
+        return handler(request)
+    messages = request.state.get("messages") or []
+    last_human = next(
+        (i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)),
+        None,
+    )
+    if last_human is None:
+        return handler(request)
+    text = messages[last_human].content
+    if not isinstance(text, str) or not _URL_RE.search(text):
+        return handler(request)
+    already = any(
+        isinstance(m, ToolMessage) and getattr(m, "name", None) == URL_TOOL_NAME
+        for m in messages[last_human + 1:]
+    )
+    if already:
+        return handler(request)
+    return handler(request.override(tool_choice=URL_TOOL_NAME))
 
 
 def _load_default_tools() -> tuple[AgentTool, ...]:
@@ -238,7 +273,9 @@ class UnHookAgent:
             model=model,
             tools=selected_tools,
             system_prompt=SYSTEM_PROMPT,
-            middleware=(*middleware, *limits),
+            # force_url_check sits inside the team middleware so it sees the
+            # tool list after emergency_route_restrict has trimmed it.
+            middleware=(*middleware, force_url_check, *limits),
             # OpenAI's provider-native structured output in strict mode. Unlike
             # ToolStrategy, it does not force another tool call after the
             # requested lookup has completed, and strict mode guarantees every

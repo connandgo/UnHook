@@ -727,3 +727,4 @@ URL 검사는 `urllib.parse`로 경로·쿼리의 검사 사본만 한 번 디�
 | 2026-09-11 | 작업 묶음 5 — `check_url_risk`가 `URLRiskResult.status`를 산출하도록 구현. 판정 우선순위와 `risk_score` 의미 축소(`unverifiable`·`clean`·`malformed`는 0)를 5절에 명시하고 단축 URL 가중치를 제거. 공유 스키마 계약(PR #11)의 생산자 갱신을 완료 |
 | 2026-09-11 | 작업 묶음 2 — `middleware.py`에 `build_checkpointer()`·`build_store()` 추가(5절 626줄 반영 요구). 5절 파일 책임 표에 Checkpointer·Store 제공을 명시 |
 | 2026-09-11 | 통합 — `app.py`(Streamlit 시연 화면) 추가. Agent Core 안정화: 구조화 출력을 OpenAI strict 스키마로 강제(필수 필드 누락 오류 방지), nano `reasoning_effort`를 `minimal`→`low`로 올려 Tool 호출 누락 완화, 이에 따라 2.3·5절 `max_output_tokens` 800→4000(gpt-5는 추론 토큰이 출력 한도에 포함). 프롬프트에 URL·`<SCAM_PHONE_n>` 토큰이 있으면 최종 답변 전 Tool 호출을 명시 |
+| 2026-09-11 | 통합 — S1 재현성 확보: `agent/core.py`에 `force_url_check`(`wrap_model_call`) 추가. 이번 턴 입력에 URL이 있고 아직 `check_url_risk` 결과가 없으면 첫 모델 호출에 `tool_choice`로 해당 Tool을 강제한다. 이후 호출과 긴급 턴(Tool이 이미 제거됨)에는 개입하지 않으며, 일반 Tool 선택은 여전히 모델이 한다 |
