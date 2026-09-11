@@ -33,19 +33,17 @@ STAGE_STEPS = [
     ("none", "피해 없음"), ("link_clicked", "링크 클릭"), ("info_exposed", "정보 노출"),
     ("app_installed", "앱 설치"), ("money_sent", "송금"),
 ]
-QUICK_STARTS = [
-    "택배 문자에 있는 링크를 눌렀어요",
-    "모르는 번호가 앱을 설치하라고 해요",
-    "이미 돈을 보냈어요, 어떡하죠?",
-]
-GREETING = (
-    "안녕하세요, Un Hook입니다. 의심스러운 문자나 전화를 받으셨나요?\n\n"
-    "지금 상황을 편하게 말해 주세요. 얼마나 위험한지, 지금 당장 무엇을 해야 하는지 알려드릴게요. "
-    "받은 문자가 있으면 아래 **📎 받은 문자 붙여넣기**로 원문을 함께 보내 주세요."
-)
+QUICK_STARTS = ["택배 문자 링크를 눌렀어요", "앱을 설치하라고 해요", "이미 돈을 보냈어요"]
 DEFAULT_USER_ID = "demo-user"
 DEFAULT_AGE_GROUP = "general"
-ASSISTANT_AVATAR = "🪝"
+# 어시스턴트 아바타: primary 원 위의 낚싯바늘. 이모지보다 브랜드에 가깝고 테마와 같은 색을 쓴다.
+ASSISTANT_AVATAR = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+<circle cx="20" cy="20" r="20" fill="#1E9DF1"/>
+<g fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+<circle cx="23.5" cy="9.5" r="2.3"/>
+<path d="M23.5 12v10.5a6.5 6.5 0 0 1-13 0V19"/>
+<path d="M10.5 19l-3 2.6M10.5 19l3.4 2.4"/>
+</g></svg>"""
 
 
 def inject_theme_css() -> None:
@@ -58,7 +56,7 @@ def inject_theme_css() -> None:
         """
         <style>
         /* 한글 본문용 폰트. config.toml의 font는 URL을 하나만 받으므로 여기서 불러온다. */
-        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap');
         :root {
           --uh-fg: light-dark(#0F1419, #E7E9EA);
           --uh-card: light-dark(#F7F8F8, #17181C);
@@ -70,85 +68,109 @@ def inject_theme_css() -> None:
           --uh-radius: 1.3rem;
         }
         /* 본문 폭: 채팅 열 하나에 집중한다. */
-        .block-container { max-width: 52rem; padding-top: 3.5rem; padding-bottom: 2rem; }
-        [data-testid="stBottomBlockContainer"] { max-width: 52rem; padding-top: 0.5rem; padding-bottom: 1.25rem; }
-        /* 사용자 말풍선: 오른쪽 정렬 + accent. 어시스턴트는 배경 없이 본문처럼. */
-        [data-testid="stChatMessage"] { padding: 0.5rem 0; background: transparent; }
-        [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
-          flex-direction: row-reverse;
-          margin-left: 18%;
-        }
-        [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageContent"] {
-          background: var(--uh-accent);
-          border-radius: var(--uh-radius) 0.4rem var(--uh-radius) var(--uh-radius);
-          padding: 0.8rem 1.1rem;
-        }
-        [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageAvatarUser"] {
-          background: var(--uh-primary); color: #fff;
-        }
-        [data-testid="stChatMessage"] [data-testid="stCodeBlock"] pre { font-size: 0.85rem; }
-        /* 상단 사건 상태 줄: 위험도 배지 + 피해 단계 레일 (이 화면의 서명 요소) */
+        .block-container { max-width: 46rem; padding-top: 3.25rem; padding-bottom: 2rem; }
+        [data-testid="stBottomBlockContainer"] { max-width: 46rem; padding-top: 0.4rem; padding-bottom: 1.25rem; }
+        [data-testid="stHeader"] { background: transparent; }
+
+        /* ── 사건 상태 줄: 위험도 배지 + 피해 단계 레일 (이 화면의 서명 요소) ── */
         .uh-case {
-          display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
-          padding: 0.9rem 1.1rem; margin-bottom: 0.8rem;
+          display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap;
+          padding: 0.85rem 1.1rem 0.85rem 1.25rem; margin-bottom: 1.25rem;
           background: var(--uh-card); border: 1px solid var(--uh-border); border-radius: var(--uh-radius);
         }
+        .uh-case-left { display: flex; flex-direction: column; gap: 0.15rem; }
+        .uh-eyebrow { color: var(--uh-muted-fg); font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em; }
         .uh-verdict {
-          display: inline-flex; align-items: center; gap: 0.4rem; white-space: nowrap;
-          padding: 0.35rem 0.85rem; border-radius: 999px; font-weight: 700; font-size: 0.95rem;
+          display: inline-flex; align-items: center; gap: 0.45rem; white-space: nowrap; align-self: flex-start;
+          padding: 0.3rem 0.85rem; border-radius: 999px; font-weight: 700; font-size: 0.95rem;
           background: var(--uh-risk); color: var(--uh-risk-text, #fff);
         }
-        .uh-rail { display: flex; flex: 1 1 18rem; align-items: center; min-width: 0; }
+        .uh-rail { display: flex; flex: 1 1 18rem; align-items: center; min-width: 0; padding-top: 0.2rem; }
         .uh-rail-step {
-          position: relative; flex: 1; text-align: center; font-size: 0.74rem; color: var(--uh-muted-fg);
-          padding-top: 1rem; white-space: nowrap;
+          position: relative; flex: 1; text-align: center; font-size: 0.8rem; color: var(--uh-muted-fg);
+          padding-top: 1.15rem; white-space: nowrap;
         }
         .uh-rail-step::before {
-          content: ""; position: absolute; top: 0.3rem; left: 50%; width: 0.6rem; height: 0.6rem;
+          content: ""; position: absolute; top: 0.25rem; left: 50%; width: 0.7rem; height: 0.7rem; z-index: 1;
           transform: translateX(-50%); border-radius: 50%;
-          background: var(--uh-muted); border: 2px solid var(--uh-border); box-sizing: border-box;
+          background: var(--uh-card); border: 2px solid var(--uh-border); box-sizing: border-box;
         }
         .uh-rail-step:not(:first-child)::after {
           content: ""; position: absolute; top: 0.52rem; right: 50%; width: 100%; height: 2px;
           background: var(--uh-border);
         }
         .uh-rail-step.done { color: var(--uh-fg); }
-        .uh-rail-step.done::before { background: var(--uh-risk); border-color: var(--uh-risk); }
-        .uh-rail-step.done::after { background: var(--uh-risk); }
+        .uh-rail-step.done::before, .uh-rail-step.done::after,
+        .uh-rail-step.now::before, .uh-rail-step.now::after { background: var(--uh-risk); border-color: var(--uh-risk); }
         .uh-rail-step.now { color: var(--uh-risk); font-weight: 700; }
-        .uh-rail-step.now::before {
-          background: var(--uh-risk); border-color: var(--uh-risk);
-          box-shadow: 0 0 0 4px color-mix(in srgb, var(--uh-risk) 22%, transparent);
+        .uh-rail-step.now::before { box-shadow: 0 0 0 4px color-mix(in srgb, var(--uh-risk) 22%, transparent); }
+
+        /* ── 첫 화면 ── */
+        .uh-hero { padding: 2.5rem 0 1.25rem; }
+        .uh-hero h1 { font-size: 2rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.25; margin: 0 0 0.6rem; }
+        .uh-hero p { color: var(--uh-muted-fg); font-size: 1.02rem; line-height: 1.6; margin: 0; max-width: 34rem; }
+        .uh-hero-label { color: var(--uh-muted-fg); font-size: 0.82rem; margin: 1.75rem 0 0.35rem; }
+
+        /* ── 말풍선 ── */
+        [data-testid="stChatMessage"] { padding: 0.35rem 0; background: transparent; gap: 0.75rem; }
+        [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+          flex-direction: row-reverse; width: 86% !important; margin-left: auto;
         }
-        .uh-rail-step.now::after { background: var(--uh-risk); }
-        /* 어시스턴트 답변 안의 요소 */
-        .uh-answer-head { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin: 0.1rem 0 0.7rem; }
-        .uh-answer-head .uh-verdict { font-size: 0.85rem; padding: 0.25rem 0.7rem; }
+        [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageContent"] {
+          background: var(--uh-accent);
+          border-radius: var(--uh-radius) 0.4rem var(--uh-radius) var(--uh-radius);
+          padding: 0.75rem 1.05rem;
+        }
+        [data-testid="stChatMessageAvatarUser"] { background: var(--uh-muted) !important; color: var(--uh-fg) !important; }
+        [data-testid="stChatMessageAvatarCustom"] { border-radius: 50%; }
+        .uh-quote {
+          margin-top: 0.6rem; padding: 0.6rem 0.85rem;
+          background: light-dark(rgba(255,255,255,0.7), rgba(255,255,255,0.05));
+          border-left: 3px solid var(--uh-primary); border-radius: 0.5rem;
+          white-space: pre-wrap; word-break: break-word; font-size: 0.9rem; line-height: 1.5;
+        }
+        .uh-quote-label { color: var(--uh-primary); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; margin-bottom: 0.2rem; }
+
+        /* ── 어시스턴트 답변 ── */
+        .uh-answer-head { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin: 0.15rem 0 0.9rem; }
+        .uh-answer-head .uh-verdict { font-size: 0.85rem; padding: 0.22rem 0.7rem; }
         .uh-answer-meta { color: var(--uh-muted-fg); font-size: 0.85rem; }
-        .uh-h { font-weight: 700; font-size: 0.95rem; margin: 0.9rem 0 0.45rem; }
-        .uh-steps { display: flex; flex-direction: column; gap: 0.45rem; }
+        .uh-h { font-weight: 700; font-size: 0.95rem; margin: 0.9rem 0 0.5rem; }
+        .uh-steps { display: flex; flex-direction: column; gap: 0.4rem; }
         .uh-step {
-          display: flex; gap: 0.75rem; align-items: flex-start;
+          display: flex; gap: 0.8rem; align-items: flex-start;
           background: var(--uh-card); border: 1px solid var(--uh-border);
-          border-radius: calc(var(--uh-radius) - 6px); padding: 0.7rem 0.9rem;
+          border-radius: 0.9rem; padding: 0.75rem 0.95rem;
         }
         .uh-step-n {
-          flex: none; width: 1.6rem; height: 1.6rem; border-radius: 50%; display: grid; place-items: center;
-          background: var(--uh-risk); color: var(--uh-risk-text, #fff); font-weight: 700; font-size: 0.8rem;
+          flex: none; width: 1.55rem; height: 1.55rem; border-radius: 50%; display: grid; place-items: center;
+          background: var(--uh-risk); color: var(--uh-risk-text, #fff); font-weight: 700; font-size: 0.78rem;
         }
-        .uh-step-body { line-height: 1.5; }
+        .uh-step-body { line-height: 1.5; font-size: 0.98rem; }
         .uh-step-contact {
-          display: inline-block; margin-top: 0.25rem; padding: 0.1rem 0.55rem; border-radius: 999px;
-          background: var(--uh-accent); color: var(--uh-primary); font-size: 0.8rem; font-weight: 600;
+          display: inline-block; margin-left: 0.45rem; padding: 0.05rem 0.55rem; border-radius: 999px;
+          background: var(--uh-accent); color: var(--uh-primary); font-size: 0.8rem; font-weight: 600; vertical-align: 1px;
         }
-        .uh-ask { margin: 1rem 0 0.2rem; font-size: 1.02rem; line-height: 1.55; }
+        .uh-ask { margin: 1.1rem 0 0.4rem; font-size: 1.05rem; line-height: 1.55; font-weight: 500; }
         .uh-quiet { color: var(--uh-muted-fg); font-size: 0.85rem; }
-        /* 사이드바: 사건 기록 */
+        /* 근거·실행 정보는 테두리 없는 작은 토글로. 답변의 무게를 할 일에 둔다. */
+        [data-testid="stChatMessage"] [data-testid="stExpander"] details {
+          border: none; background: transparent; border-radius: 0;
+        }
+        [data-testid="stChatMessage"] [data-testid="stExpander"] summary {
+          padding: 0.25rem 0; font-size: 0.85rem; color: var(--uh-muted-fg);
+        }
+        [data-testid="stChatMessage"] [data-testid="stExpander"] summary:hover { color: var(--uh-primary); }
+        [data-testid="stChatMessage"] [data-testid="stExpanderDetails"] {
+          padding: 0.4rem 0 0.6rem 0.9rem; border-left: 2px solid var(--uh-border); font-size: 0.9rem;
+        }
+
+        /* ── 사이드바: 사건 기록 ── */
         [data-testid="stSidebar"] .uh-section {
           color: var(--uh-muted-fg); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em;
-          text-transform: uppercase; margin: 1rem 0 0.4rem;
+          text-transform: uppercase; margin: 1.1rem 0 0.4rem;
         }
-        .uh-fact { display: flex; justify-content: space-between; align-items: center; padding: 0.3rem 0; font-size: 0.9rem; }
+        .uh-fact { display: flex; justify-content: space-between; align-items: center; padding: 0.4rem 0; font-size: 0.9rem; }
         .uh-fact + .uh-fact { border-top: 1px solid var(--uh-border); }
         .uh-tag { padding: 0.1rem 0.6rem; border-radius: 999px; font-size: 0.78rem; font-weight: 600; }
         .uh-tag.bad { background: color-mix(in srgb, #F4212E 14%, transparent); color: #F4212E; }
@@ -156,7 +178,8 @@ def inject_theme_css() -> None:
         .uh-tag.na { background: var(--uh-muted); color: var(--uh-muted-fg); }
         .uh-check { display: flex; gap: 0.5rem; align-items: center; padding: 0.2rem 0; font-size: 0.9rem; }
         .uh-check.done { color: var(--uh-muted-fg); text-decoration: line-through; }
-        /* 하단 입력 줄 */
+
+        /* ── 하단 입력 줄 ── */
         [data-testid="stBottom"] > div { background: transparent; }
         [data-testid="stChatInput"] { border-radius: var(--uh-radius); }
         [data-testid="stPopoverBody"] { width: min(34rem, 92vw); }
@@ -299,7 +322,8 @@ def render_case_strip(snap: StateSnapshot) -> None:
         steps.append(f"<div class='uh-rail-step {cls}'>{label}</div>")
     st.markdown(
         f"<div class='uh-case' style='{risk_vars(snap.risk_level)}'>"
-        f"{verdict_html(snap.risk_level)}<div class='uh-rail'>{''.join(steps)}</div></div>",
+        f"<div class='uh-case-left'><span class='uh-eyebrow'>현재 위험도</span>{verdict_html(snap.risk_level)}</div>"
+        f"<div class='uh-rail'>{''.join(steps)}</div></div>",
         unsafe_allow_html=True,
     )
 
@@ -310,7 +334,7 @@ def render_assessment(entry: dict[str, Any]) -> None:
     scam = SCAM_LABEL.get(a["scam_type"], a["scam_type"])
     st.markdown(
         f"<div class='uh-answer-head' style='{style}'>{verdict_html(a['risk_level'])}"
-        f"<span class='uh-answer-meta'>{html.escape(scam)} · 확신 {a['confidence'] * 100:.0f}%</span></div>",
+        f"<span class='uh-answer-meta'>{html.escape(scam)} · 확신도 {a['confidence'] * 100:.0f}%</span></div>",
         unsafe_allow_html=True,
     )
     if a.get("injection_detected"):
@@ -333,22 +357,15 @@ def render_assessment(entry: dict[str, Any]) -> None:
     if a.get("next_question"):
         st.markdown(f"<p class='uh-ask'>{html.escape(a['next_question'])}</p>", unsafe_allow_html=True)
     with st.expander("왜 이렇게 판단했나요?"):
-        st.markdown("**판단 근거**")
-        for item in a["evidence"]:
-            st.markdown(f"- {item}")
+        # 항목마다 st.markdown을 부르면 블록 간격이 벌어져 한 문자열로 모아 그린다.
+        lines = ["**판단 근거**", *(f"- {item}" for item in a["evidence"])]
         if a["unverified"]:
-            st.markdown("**아직 확인되지 않은 것**")
-            for item in a["unverified"]:
-                st.markdown(f"- {item}")
-    with st.expander("실행 정보"):
-        model_line = f"모델: `{entry['model_used']}`"
+            lines += ["", "**아직 확인되지 않은 것**", *(f"- {item}" for item in a["unverified"])]
+        model_line = f"모델 `{entry['model_used']}`"
         if entry["escalated"]:
-            model_line += f" (재검토: {', '.join(entry['escalation_reasons'])})"
-        st.markdown(model_line)
-        for line in entry["tool_lines"]:
-            st.markdown(line)
-        if not entry["tool_lines"]:
-            st.caption("Tool 호출 없음")
+            model_line += f" · 재검토: {', '.join(entry['escalation_reasons'])}"
+        lines += ["", "**실행 정보**", "", model_line, "", *(entry["tool_lines"] or ["Tool 호출 없음"])]
+        st.markdown("  \n".join(lines))
 
 
 def render_case_file(snap: StateSnapshot) -> None:
@@ -402,30 +419,38 @@ with st.sidebar:
                 run_turn(REPORT_APPROVAL_STATEMENT, "", report_approved=True)
                 st.rerun()
     elif st.session_state.report_done:
-        st.success("신고가 접수되었습니다. 접수 번호는 답변의 실행 정보에서 확인하세요.")
+        st.success("신고가 접수되었습니다. 접수 결과는 답변의 '왜 이렇게 판단했나요?'에서 확인하세요.")
     st.caption(f"{st.session_state.turn_count}턴 · `{st.session_state.thread_id}`")
 
 if not os.getenv("OPENAI_API_KEY"):
     st.error("OPENAI_API_KEY 환경변수가 없습니다. 설정 후 다시 실행하세요.")
     st.stop()
 
-render_case_strip(snapshot)
-
 quick_pick: str | None = None
-if not st.session_state.history:
-    with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
-        st.markdown(GREETING)
-        st.markdown("<p class='uh-quiet'>이런 상황이면 눌러서 바로 시작하세요.</p>", unsafe_allow_html=True)
-        for col, text in zip(st.columns(len(QUICK_STARTS)), QUICK_STARTS):
-            if col.button(text, width="stretch"):
-                quick_pick = text
+if st.session_state.history:
+    render_case_strip(snapshot)
+else:
+    st.markdown(
+        "<div class='uh-hero'><h1>무슨 일이 있었나요?</h1>"
+        "<p>의심스러운 문자나 전화를 받았다면 지금 상황을 편하게 말해 주세요. "
+        "얼마나 위험한지, 지금 당장 무엇을 해야 하는지 알려드립니다. "
+        "받은 문자가 있으면 아래 <b>📎 받은 문자 붙여넣기</b>로 원문도 함께 보내 주세요.</p>"
+        "<div class='uh-hero-label'>이런 상황이면 눌러서 바로 시작하세요</div></div>",
+        unsafe_allow_html=True,
+    )
+    for col, text in zip(st.columns(len(QUICK_STARTS)), QUICK_STARTS):
+        if col.button(text, width="stretch"):
+            quick_pick = text
 
 for entry in st.session_state.history:
     if entry["role"] == "user":
         with st.chat_message("user"):
-            st.markdown(entry["statement"])
+            st.markdown(html.escape(entry["statement"]))
             if entry["quoted"]:
-                st.code(entry["quoted"], language=None)
+                st.markdown(
+                    f"<div class='uh-quote'><div class='uh-quote-label'>받은 문자</div>{html.escape(entry['quoted'])}</div>",
+                    unsafe_allow_html=True,
+                )
     elif entry["role"] == "assistant":
         with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
             render_assessment(entry)
