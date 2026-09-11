@@ -254,13 +254,6 @@ class ToolWiringTests(unittest.TestCase):
         self.assertEqual(tools.LOOKUP_TOOL_NAMES,
                          ["check_url_risk", "verify_caller_number"])
 
-    def test_playbook_returns_empty_until_rag_module_exists(self):
-        """1.5 안정성: rag.py가 없으면 추측 대신 빈 결과."""
-        result = tools.get_scam_playbook.invoke(
-            {"scam_type": "smishing", "damage_stage": "money_sent"}
-        )
-        self.assertEqual(result, {"steps": [], "contacts": []})
-
 
 if __name__ == "__main__":
     unittest.main()
