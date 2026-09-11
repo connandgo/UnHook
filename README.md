@@ -1,3 +1,5 @@
+![Un Hook — 금융사기 예방·대응 AI Agent](docs/images/cover.png)
+
 # Un Hook
 
 보이스피싱·스미싱·메신저 피싱 등 금융사기 의심 상황을 대화로 파악하고, 피해 단계에 맞는 대응 행동을 안내하는 LangChain 기반 AI Agent.
@@ -7,16 +9,21 @@
 - [AI Agent 설계서](docs/agent-design.md) — 팀 공통 기술 명세. 모든 구현은 이 문서를 기준으로 한다.
 - [구현 파일 및 공유 계약](docs/agent-design.md#5-구현-파일-및-공유-계약) — 파일별 작업 범위와 공통 코드 사용 규칙.
 - [입력 보안 연결 안내](AGENTS.md#입력-보안-연결) — ③ 구현 API, 팀별 연결 작업 및 검증 방법.
+- [Agent Core 안내](agent/README.md) — `build_unhook_agent()` 사용법, 모델 재검토 조건, 팀 모듈 연결 계약.
+- 설계서 수정 제안 — [`report_to_authority` 접수번호](docs/proposal-report-receipt.md), [`URLRiskResult.status`](docs/proposal-url-risk-status.md).
 
 ## 공통 코드
 
 `schemas.py`는 출력 스키마와 Tool 결과 타입, `state.py`는 State와 Runtime Context를 정의한다.
 `config.py`는 설계서에 확정된 모델명과 승격 판단 기준을 제공한다.
-공통 계약, ③ 입력 보안, ④ 개인정보·출력 검증, ⑤ Tool·메모리를 구현했다. 전체 Agent 조립과 시연 화면 연결은 별도 작업이다.
+작업 묶음 ①~⑥(Agent Core, Middleware, 입력 보안, 개인정보·출력 검증, Tool·메모리, RAG)과
+시연 화면(`app.py`)까지 모두 구현되어 있다. 모델은 현재 `gpt-5-nano` 단일 모델이며,
+`ESCALATION_MODEL`은 재검토 프로필(같은 모델, 더 긴 출력 한도)을 가리킨다.
 
 ```bash
 python -m pip install -r requirements.txt
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests -v      # 공통 계약·보안·PII·Tool·RAG
+python -m pip install pytest && python -m pytest -q agent/tests   # Agent Core
 ```
 
 ```python
@@ -51,8 +58,7 @@ streamlit run app.py
 
 ## 디렉터리 구조
 
-아래는 구현 예정 파일까지 포함한 팀 작업 구조다. `[예정]`은 아직 생성하지 않은 파일/폴더이며,
-숫자는 작업 묶음 번호다. 번호와 팀원 이름의 매핑은 별도 합의한다.
+숫자는 설계서 5절의 작업 묶음 번호다.
 
 ```text
 UnHook/
@@ -60,36 +66,44 @@ UnHook/
 |-- AGENTS.md                  공통 개발 안내
 |-- CLAUDE.md                  AGENTS.md 참조
 |-- .gitignore
+|-- .env.example               환경변수 이름, 실제 키는 포함하지 않음
+|-- requirements.txt           공통 코드 의존성
 |-- docs/
 |   |-- agent-design.md        단일 기준 설계서 및 공유 계약
-|   `-- images/                설계 이미지
-|-- requirements.txt           공통 코드 의존성
-|-- .env.example               환경변수 이름, 실제 키는 포함하지 않음
-|-- config.py                  공통 모델명 및 승격 기준, 전원 공유
-|-- app.py                     Streamlit 시연 화면, Agent 실행·신고 승인 연결 (통합)
+|   |-- proposal-*.md          설계서 수정 제안서
+|   `-- images/                표지·설계 이미지
 |
+|-- config.py                  공통 모델명 및 승격 기준, 전원 공유
 |-- schemas.py                 출력 스키마 및 Tool 결과 타입 (1, 전원 공유)
 |-- state.py                   State 및 Context (2, 전원 공유)
 |
-|-- agent.py                   [예정] Agent 조립, 모델, 프롬프트 (1)
-|-- middleware.py              [예정] 피해 상태, 긴급 분기, 승인, 조립 (2)
+|-- agent/                     Agent 조립, 모델, 프롬프트 (1)
+|   |-- core.py                create_agent 조립, invoke/ainvoke, 마스킹·Middleware 연결
+|   |-- model_policy.py        재검토 프로필 전환 조건
+|   |-- prompts.py             시스템 프롬프트
+|   |-- schemas.py, config.py  공통 계약 어댑터
+|   |-- cli.py                 터미널 대화 클라이언트 (python -m agent.cli)
+|   |-- README.md              Agent Core 사용법
+|   `-- tests/test_agent_core.py
+|-- middleware.py              피해 상태, 긴급 분기, 이력 주입, 조립·Checkpointer·Store (2)
 |-- guards.py                  주제 필터, 인젝션, 원문 격리 (3)
 |-- pii.py                     개인정보 마스킹, 토큰화 (4)
 |-- audit.py                   응답 검증 (4)
 |-- tools.py                   URL 검사, 번호 확인, 신고 Tool (5)
 |-- memory.py                  과거 신고 이력 저장 및 대조 (5)
 |-- rag.py                     대응 절차 문서 청킹·적재·검색 (6)
+|-- app.py                     Streamlit 시연 화면, Agent 실행·신고 승인 연결 (통합)
 |
 |-- data/
 |   |-- kisa_urls.csv          URL 검사 데이터 (5)
 |   |-- contacts.json          연락처 테이블, id→label (6)
 |   |-- playbook_fallback.json step_keys·step_order·검색 실패 시 기본 절차 (6)
-|   `-- playbook_docs/         금감원·KISA·경찰청 원문, step 단위 청크 (6)
+|   `-- playbook_docs/         금감원 2·KISA 1·경찰청 1 원문, step 단위 청크 (6)
 `-- tests/
     |-- test_contracts.py      공통 스키마 및 State 연결 검증
-    |-- test_tools_memory.py   Tool 및 이력 메모리 검증 (5)
-    |-- test_guards.py         입력 보안 3개 흐름 및 연결·오류 검증
+    |-- test_guards.py         입력 보안 3개 흐름 및 연결·오류 검증 (3)
     |-- test_pii_audit.py      개인정보 마스킹·출력 감사 연결 검증 (4)
+    |-- test_tools_memory.py   Tool 및 이력 메모리 검증 (5)
     `-- test_rag.py            RAG 검색·정렬·폴백 검증 (6)
 ```
 
@@ -97,8 +111,8 @@ UnHook/
 반영하는 `MemoryInjectMiddleware`는 `middleware.py`에서 구현한다.
 이력 조회를 별도 Tool로 등록하지 않는 기존 설계를 따른다.
 
-미정인 신고 정리서·이력 레코드의 세부 필드, 모듈 생성 함수의 인자와 반환 계약은
-[설계서 5절](docs/agent-design.md#5-구현-파일-및-공유-계약)을 기준으로 담당자끼리 확정한 후 구현한다.
+모듈 생성 함수의 인자와 반환 계약은 [설계서 5절](docs/agent-design.md#5-구현-파일-및-공유-계약)을 기준으로 한다.
+설계서 변경이 필요하면 `docs/proposal-*.md` 형식의 제안서를 먼저 올린다.
 
 ## 팀 (5층 6반 1조)
 
