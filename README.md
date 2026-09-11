@@ -6,12 +6,13 @@
 
 - [AI Agent 설계서](docs/agent-design.md) — 팀 공통 기술 명세. 모든 구현은 이 문서를 기준으로 한다.
 - [구현 파일 및 공유 계약](docs/agent-design.md#5-구현-파일-및-공유-계약) — 파일별 작업 범위와 공통 코드 사용 규칙.
+- [입력 보안 연결 안내](AGENTS.md#입력-보안-연결) — ③ 구현 API, 팀별 연결 작업 및 검증 방법.
 
 ## 공통 코드
 
 `schemas.py`는 출력 스키마와 Tool 결과 타입, `state.py`는 State와 Runtime Context를 정의한다.
 `config.py`는 설계서에 확정된 모델명과 승격 판단 기준을 제공한다.
-현재는 공통 계약 구현 단계이며, Agent·Tool·보안 기능과 시연 화면은 구현 예정이다.
+공통 계약, ③ 입력 보안, ④ 개인정보·출력 검증, ⑤ Tool·메모리를 구현했다. 전체 Agent 조립과 시연 화면 연결은 별도 작업이다.
 
 ```bash
 python -m pip install -r requirements.txt
@@ -25,7 +26,8 @@ from state import RuntimeContext, UnHookState, create_initial_state
 ```
 
 API 키 이름은 `.env.example`을 참고한다. 키는 실행 환경에 설정하며,
-현재 공통 코드는 `.env`를 자동으로 읽거나 API를 호출하지 않는다.
+`.env`를 자동으로 읽지 않는다. 기본 보안 판별기는 의심 입력에서 OpenAI API를 호출하므로
+실행 전에 환경변수를 설정한다. 테스트는 모의 모델을 사용해 키·네트워크 없이 실행한다.
 
 ## 디렉터리 구조
 
@@ -51,9 +53,9 @@ UnHook/
 |
 |-- agent.py                   [예정] Agent 조립, 모델, 프롬프트 (1)
 |-- middleware.py              [예정] 피해 상태, 긴급 분기, 승인, 조립 (2)
-|-- guards.py                  [예정] 주제 필터, 인젝션, 원문 격리 (3)
-|-- pii.py                     [예정] 개인정보 마스킹, 토큰화 (4)
-|-- audit.py                   [예정] 응답 검증 (4)
+|-- guards.py                  주제 필터, 인젝션, 원문 격리 (3)
+|-- pii.py                     개인정보 마스킹, 토큰화 (4)
+|-- audit.py                   응답 검증 (4)
 |-- tools.py                   URL 검사, 번호 확인, 신고 Tool (5)
 |-- memory.py                  과거 신고 이력 저장 및 대조 (5)
 |-- rag.py                     [예정] 대응 절차 검색 (6)
@@ -65,7 +67,8 @@ UnHook/
 |   `-- playbook_docs/          금감원/KISA 원문 (6)
 `-- tests/
     |-- test_contracts.py      공통 스키마 및 State 연결 검증
-    `-- test_tools_memory.py   Tool 및 이력 메모리 검증 (5)
+    |-- test_tools_memory.py   Tool 및 이력 메모리 검증 (5)
+    `-- test_guards.py         입력 보안 3개 흐름 및 연결·오류 검증
 ```
 
 `memory.py`는 Store 저장·조회·대조 로직을 제공한다. 이를 호출해 State와 프롬프트에
