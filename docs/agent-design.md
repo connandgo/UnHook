@@ -460,15 +460,16 @@ flowchart TD
 | `guards.py` | 주제 필터, 인젝션 탐지, 원문 격리 | 3 | 구현 예정 |
 | `pii.py` | 개인정보 마스킹 및 토큰화 | 4 | 구현 예정 |
 | `audit.py` | 출력 검증, 단정 표현 및 근거 검사 | 4 | 구현 예정 |
-| `tools.py` | URL 및 번호 조회, 모의 신고 Tool, RAG Tool 연결 | 5 | 구현 예정 |
-| `memory.py` | Store의 과거 신고 이력 저장·조회·대조, `MemoryInjectMiddleware`가 호출 | 5 | 구현 예정 |
+| `tools.py` | URL 및 번호 조회, 모의 신고 Tool, RAG Tool 연결 | 5 | 구현 |
+| `memory.py` | Store의 과거 신고 이력 저장·조회·대조, `MemoryInjectMiddleware`가 호출 | 5 | 구현 |
 | `rag.py` | 대응 절차 문서 적재 및 검색 | 6 | 구현 예정 |
-| `data/kisa_urls.csv` | URL 검사 데이터 | 5 | 준비 예정 |
+| `data/kisa_urls.csv` | URL 검사 데이터 | 5 | 테스트 데이터로 구현, 공개 목록 확보 시 교체 |
 | `data/contacts.json`, `data/playbook_fallback.json`, `data/playbook_docs/` | 공식 연락처, 검색 실패 시 기본 절차, 검색 원문 | 6 | 준비 예정 |
 | `app.py` | 시연 화면 및 대화 실행/승인 연결 | 통합 | 구현 예정 |
-| `.env.example` | API 키 이름과 빈 값만 기재, 현재 `OPENAI_API_KEY` 포함 | 통합 | 기본 템플릿 구현 |
+| `.env.example` | API 키 이름과 빈 값만 기재, 현재 `OPENAI_API_KEY`·`FSS_FINLIFE_API_KEY` 포함 | 통합 | 기본 템플릿 구현 |
 | `requirements.txt` | 공통 코드 실행 의존성, 이후 담당별 의존성 추가 | 공통 | 공통 계약 의존성만 기록 |
 | `tests/test_contracts.py` | 공유 계약 및 State 연결 검증 | 통합 | 구현 |
+| `tests/test_tools_memory.py` | Tool 판정·재시도 규약, 이력 대조·PII 미저장 검증 | 5 | 구현 |
 
 ### 공유 코드 사용 규칙
 
@@ -509,6 +510,23 @@ flowchart TD
 - `ScamAssessment`는 confidence 범위, evidence 최소 개수, 조치 최대 개수와 우선순위 순서를 검증한다.
   근거 없는 원시 출력은 이 모델 생성이 실패할 수 있으므로 출력 감사에서 검증 오류도 처리해야 한다.
   스키마 검증만으로 인젝션, 사실성, PII 또는 한 번에 하나의 질문이라는 의미적 규칙을 보장하지 않는다.
+- `tools.py`는 설계서 2.5의 Tool 4종을 `ALL_TOOLS`로 내보낸다. Agent 조립(작업 묶음 1)은
+  이 리스트를 사용하고, `EmergencyRouteMiddleware`(작업 묶음 2)는 비활성화 대상으로
+  `LOOKUP_TOOL_NAMES`(`check_url_risk`, `verify_caller_number`)를 사용한다.
+  판정부는 Tool과 분리해 `analyze_url()`, `verify_number()`로 두었으므로 네트워크 없이
+  단독 호출·테스트할 수 있다.
+- `verify_caller_number`의 인증키 환경변수는 `FSS_FINLIFE_API_KEY`로 확정한다.
+  키가 없거나 조회가 `FINLIFE_MAX_ATTEMPTS`회 실패하면 `is_official=None`을 돌려주며,
+  이 값을 `unverified`에 기록하는 것은 호출부의 책임이다.
+- `get_scam_playbook`은 `tools.py`에 Tool로 등록하되 실제 검색은 `rag.py`(작업 묶음 6)의
+  `search_playbook(scam_type, damage_stage) -> PlaybookResult`에 위임한다. `rag.py`가 아직
+  없으면 빈 결과를 돌려주고 추측으로 채우지 않는다.
+- `memory.py`는 전화번호를 `hash_identifier()`로 해시해 저장하고 숫자 원문은 보관하지 않는다
+  (1.5 보안). 문구 비교용 정규화는 6자리 이상 숫자열을 제거하므로 번호가 문구 채널로
+  노출되지 않는다. 표시용 마스킹 값은 이번 입력에서 만들고 Store에서 꺼내지 않는다.
+- `MemoryInjectMiddleware`(작업 묶음 2)는 `load_history()` → `match_history()` →
+  `summarize_for_prompt()` 순서로 호출한다. 문구 부분 일치 기준은 `MIN_PHRASE_MATCH_CHARS`
+  상수로 두었으며 임계치 확정은 기존 담당자 확인 사항으로 남는다.
 - 보안 클래스 구현은 `guards.py`, `pii.py`, `audit.py`에서 담당하고,
   `middleware.py`에서 조립해 `agent.py`로 전달한다. 함수명과 생성자 계약은 각 구현 착수 시 합의한다.
   RAG 모델, 벡터 스토어, 이력 대조 임계치 등 기존 미정 사항은 아직 확정하지 않았다.
@@ -526,3 +544,4 @@ flowchart TD
 | 2026-09-11 | `update_case` Tool 제거 → `DamageStateMiddleware`(`after_model`)로 대체 (2.4·2.5·3.1·3.2·4.2 연쇄 수정). `get_scam_playbook`을 로컬 JSON 단독에서 금감원·KISA 문서 기반 RAG + 로컬 JSON 폴백으로 변경 |
 | 2026-09-11 | `lookup_history` Tool 제거 → `MemoryInjectMiddleware`(`before_agent` + `wrap_model_call`)로 대체. 조회 조건이 결정적이고 파라미터가 없어 모델에 호출 판단을 맡길 이유가 없으며, 일치 판정을 코드로 옮겨 TS-05 누락 위험을 제거 (1.5·2.1·2.2·2.5·3.1·3.2·4.2 연쇄 수정, State `history_matches` 추가) |
 | 2026-09-11 | 잔여 불일치 정리 — 2.4에 `damage_flags`(`DamageFlags`)·`ActionStep` 정의 추가, 3.1에 `checklist`·`pii_vault`·`incident_report` State 추가 및 `info_exposed`로 개명, `channel`을 State로 통일, `EmergencyRoute`의 `jump_to="end"` 즉시 종료를 제거하고 `before_agent`(조회 Tool 비활성화) + `after_agent`(첫 줄 고정)로 재정의, 4.2 TS-04-C001 Tool 호출 조건 정정 |
+| 2026-09-11 | 작업 묶음 5 구현 — `tools.py`(Tool 4종, 판정부 분리), `memory.py`(Store 이력 저장·대조, 전화번호 해시화), `data/kisa_urls.csv` 테스트 데이터, `tests/test_tools_memory.py`. `FSS_FINLIFE_API_KEY` 환경변수명 확정, 5절에 묶음 5 공유 계약 추가 |
