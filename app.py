@@ -21,10 +21,11 @@ RISK_LABEL = {
     "critical": "매우 위험", "high": "위험", "medium": "주의", "low": "낮음", "insufficient_info": "정보 부족",
 }
 # 위험도 색은 디자인 토큰의 chart/destructive 색을 쓴다 (.streamlit/config.toml과 같은 팔레트).
+# 위험도 색. 채도를 낮춰 하늘색 테마와 어울리게 하되 글자·점으로 쓸 만큼 진하게 유지한다.
+# 배지는 이 색의 연한 틴트 위에 같은 색 글자로 그린다 (CSS .uh-verdict). 정보 부족은 푸른 기 도는 회색.
 RISK_COLOR = {
-    "critical": "#F4212E", "high": "#E0245E", "medium": "#F7B928", "low": "#00B87A", "insufficient_info": "#72767A",
+    "critical": "#D9485A", "high": "#E07A3F", "medium": "#C99A1F", "low": "#2E9F78", "insufficient_info": "#6B7A8A",
 }
-RISK_TEXT = {"medium": "#0F1419"}  # 노란 배경은 흰 글자가 안 보여 어두운 글자를 쓴다.
 SCAM_LABEL = {
     "smishing": "스미싱(문자 사기)", "voice_phishing": "보이스피싱", "messenger_phishing": "메신저 피싱",
     "loan_scam": "대출 사기", "gov_impersonation": "기관 사칭", "investment_scam": "투자 사기", "unknown": "유형 미확정",
@@ -128,17 +129,22 @@ def inject_theme_css() -> None:
 
         /* ── 사건 상태 줄: 위험도 배지 + 피해 단계 레일 (이 화면의 서명 요소) ── */
         .uh-case {
-          display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap;
-          padding: 0.85rem 1.1rem 0.85rem 1.25rem; margin-bottom: 1.25rem;
+          display: flex; align-items: stretch; gap: 1.25rem; flex-wrap: wrap;
+          padding: 0.85rem 1.25rem; margin-bottom: 1.25rem;
         }
-        .uh-case-left { display: flex; flex-direction: column; gap: 0.15rem; }
+        .uh-case-left { display: flex; flex-direction: column; gap: 0.35rem; justify-content: center;
+          padding-right: 1.25rem; border-right: 1px solid var(--uh-border); }
+        .uh-case-right { flex: 1 1 18rem; min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
         .uh-eyebrow { color: var(--uh-muted-fg); font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em; }
         .uh-verdict {
           display: inline-flex; align-items: center; gap: 0.45rem; white-space: nowrap; align-self: flex-start;
           padding: 0.3rem 0.85rem; border-radius: 999px; font-weight: 700; font-size: 0.95rem;
-          background: var(--uh-risk); color: var(--uh-risk-text, #fff);
+          background: color-mix(in srgb, var(--uh-risk) 14%, transparent);
+          color: light-dark(var(--uh-risk), color-mix(in srgb, var(--uh-risk) 70%, #fff));
+          border: 1px solid color-mix(in srgb, var(--uh-risk) 28%, transparent);
         }
-        .uh-rail { display: flex; flex: 1 1 18rem; align-items: center; min-width: 0; padding-top: 0.2rem; }
+        .uh-verdict::before { content: ""; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--uh-risk); }
+        .uh-rail { display: flex; align-items: center; min-width: 0; margin: 0 -0.5rem; }
         .uh-rail-step {
           position: relative; flex: 1; text-align: center; font-size: 0.8rem; color: var(--uh-muted-fg);
           padding-top: 1.15rem; white-space: nowrap;
@@ -149,14 +155,15 @@ def inject_theme_css() -> None:
           background: light-dark(#fff, #17181C); border: 2px solid var(--uh-border); box-sizing: border-box;
         }
         .uh-rail-step:not(:first-child)::after {
-          content: ""; position: absolute; top: 0.52rem; right: 50%; width: 100%; height: 2px;
+          content: ""; position: absolute; top: 0.55rem; right: 50%; width: 100%; height: 1.5px;
           background: var(--uh-border);
         }
         .uh-rail-step.done { color: var(--uh-fg); }
-        .uh-rail-step.done::before, .uh-rail-step.done::after,
-        .uh-rail-step.now::before, .uh-rail-step.now::after { background: var(--uh-risk); border-color: var(--uh-risk); }
-        .uh-rail-step.now { color: var(--uh-risk); font-weight: 700; }
-        .uh-rail-step.now::before { box-shadow: 0 0 0 4px color-mix(in srgb, var(--uh-risk) 22%, transparent); }
+        .uh-rail-step.done::before { background: color-mix(in srgb, var(--uh-risk) 55%, #fff); border-color: transparent; }
+        .uh-rail-step.done::after, .uh-rail-step.now::after { background: color-mix(in srgb, var(--uh-risk) 45%, transparent); }
+        .uh-rail-step.now { color: light-dark(var(--uh-risk), color-mix(in srgb, var(--uh-risk) 70%, #fff)); font-weight: 700; }
+        .uh-rail-step.now::before { background: var(--uh-risk); border-color: transparent;
+          box-shadow: 0 0 0 4px color-mix(in srgb, var(--uh-risk) 18%, transparent); }
 
         /* ── 첫 화면 ── */
         .uh-hero { padding: 2.5rem 0 1.25rem; }
@@ -221,7 +228,7 @@ def inject_theme_css() -> None:
         }
         .uh-step-n {
           flex: none; width: 1.55rem; height: 1.55rem; border-radius: 50%; display: grid; place-items: center;
-          background: var(--uh-risk); color: var(--uh-risk-text, #fff); font-weight: 700; font-size: 0.78rem;
+          background: var(--uh-risk); color: #fff; font-weight: 700; font-size: 0.78rem;
         }
         .uh-step-body { line-height: 1.5; font-size: 0.98rem; }
         .uh-step-contact {
@@ -281,8 +288,8 @@ def inject_theme_css() -> None:
         .uh-fact { display: flex; justify-content: space-between; align-items: center; padding: 0.4rem 0; font-size: 0.9rem; }
         .uh-fact + .uh-fact { border-top: 1px solid var(--uh-border); }
         .uh-tag { padding: 0.1rem 0.6rem; border-radius: 999px; font-size: 0.78rem; font-weight: 600; text-align: right; max-width: 60%; }
-        .uh-tag.bad { background: color-mix(in srgb, #F4212E 14%, transparent); color: #F4212E; }
-        .uh-tag.ok { background: color-mix(in srgb, #00B87A 16%, transparent); color: #00B87A; }
+        .uh-tag.bad { background: color-mix(in srgb, #D9485A 14%, transparent); color: light-dark(#D9485A, #F09AA4); }
+        .uh-tag.ok { background: color-mix(in srgb, #2E9F78 16%, transparent); color: light-dark(#2E9F78, #8ED8BC); }
         .uh-tag.na { background: var(--uh-muted); color: var(--uh-muted-fg); }
         .uh-check { display: flex; gap: 0.5rem; align-items: center; padding: 0.2rem 0; font-size: 0.9rem; }
         .uh-check.done { color: var(--uh-muted-fg); text-decoration: line-through; }
@@ -339,8 +346,7 @@ def inject_theme_css() -> None:
 def risk_vars(risk_level: str) -> str:
     """위험도 색을 CSS 변수로 넘기는 inline style 문자열."""
     color = RISK_COLOR.get(risk_level, RISK_COLOR["insufficient_info"])
-    text = RISK_TEXT.get(risk_level, "#FFFFFF")
-    return f"--uh-risk:{color};--uh-risk-text:{text};"
+    return f"--uh-risk:{color};"
 
 
 def verdict_html(risk_level: str) -> str:
@@ -473,7 +479,7 @@ def render_case_strip(snap: StateSnapshot) -> None:
     st.markdown(
         f"<div class='uh-case uh-glass' style='{risk_vars(snap.risk_level)}'>"
         f"<div class='uh-case-left'><span class='uh-eyebrow'>현재 위험도</span>{verdict_html(snap.risk_level)}</div>"
-        f"<div class='uh-rail'>{''.join(steps)}</div></div>",
+        f"<div class='uh-case-right'><span class='uh-eyebrow'>피해 단계</span><div class='uh-rail'>{''.join(steps)}</div></div></div>",
         unsafe_allow_html=True,
     )
 
