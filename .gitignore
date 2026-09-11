@@ -1,2 +1,11 @@
 # OMC 로컬 운영 아티팩트
 .omc/
+
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+
+# Local credentials
+.env
+.env.*
+!.env.example

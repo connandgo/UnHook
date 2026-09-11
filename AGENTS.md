@@ -40,7 +40,15 @@ AGENTS.md              이 문서
 CLAUDE.md              Claude Code용 진입점 (AGENTS.md를 가져옴)
 docs/agent-design.md   AI Agent 설계서 (단일 기준 문서)
 docs/images/           설계서 첨부 이미지
+schemas.py             출력 스키마, 공통 Literal, Tool 결과 타입
+state.py               AgentState, Runtime Context, 새 대화 초기값
+config.py              공통 모델명 및 승격 기준
+.env.example           환경변수 이름 예시
+requirements.txt       공통 코드 의존성
+tests/                 공통 계약 검증
 ```
+
+예정된 구현 파일과 공유 계약은 설계서 5절을 참조한다.
 
 ## 팀·담당
 

@@ -445,10 +445,82 @@ flowchart TD
 
 ---
 
+## 5. 구현 파일 및 공유 계약
+
+팀 구현은 아래의 루트 단위 파일 구조를 사용한다. 번호는 작업 묶음이며,
+기존 담당자 이름을 새로 배정하는 의미는 아니다.
+
+| 파일 | 책임 | 작업 묶음 | 현재 상태 |
+|---|---|---|---|
+| `schemas.py` | `ScamAssessment`, `DamageFlags`, `ActionStep`, 공통 Literal, Tool 반환 타입 | 1, 전원 공유 | 구현 |
+| `state.py` | `UnHookState`, `RuntimeContext`, 새 대화 초기값 | 2, 전원 공유 | 구현 |
+| `config.py` | 2.3의 확정 모델명과 승격 판단 기준 | 공통 | 구현 |
+| `agent.py` | Agent 조립, 모델, 프롬프트, 공통 스키마 연결 | 1 | 구현 예정 |
+| `middleware.py` | 피해 상태 갱신, 긴급 분기, 승인 및 미들웨어 조립 | 2 | 구현 예정 |
+| `guards.py` | 주제 필터, 인젝션 탐지, 원문 격리 | 3 | 구현 예정 |
+| `pii.py` | 개인정보 마스킹 및 토큰화 | 4 | 구현 예정 |
+| `audit.py` | 출력 검증, 단정 표현 및 근거 검사 | 4 | 구현 예정 |
+| `tools.py` | URL 및 번호 조회, 모의 신고 Tool, RAG Tool 연결 | 5 | 구현 예정 |
+| `memory.py` | Store의 과거 신고 이력 저장·조회·대조, `MemoryInjectMiddleware`가 호출 | 5 | 구현 예정 |
+| `rag.py` | 대응 절차 문서 적재 및 검색 | 6 | 구현 예정 |
+| `data/kisa_urls.csv` | URL 검사 데이터 | 5 | 준비 예정 |
+| `data/contacts.json`, `data/playbook_fallback.json`, `data/playbook_docs/` | 공식 연락처, 검색 실패 시 기본 절차, 검색 원문 | 6 | 준비 예정 |
+| `app.py` | 시연 화면 및 대화 실행/승인 연결 | 통합 | 구현 예정 |
+| `.env.example` | API 키 이름과 빈 값만 기재, 현재 `OPENAI_API_KEY` 포함 | 통합 | 기본 템플릿 구현 |
+| `requirements.txt` | 공통 코드 실행 의존성, 이후 담당별 의존성 추가 | 공통 | 공통 계약 의존성만 기록 |
+| `tests/test_contracts.py` | 공유 계약 및 State 연결 검증 | 통합 | 구현 |
+
+### 공유 코드 사용 규칙
+
+- 전체 디렉터리 트리는 [README](../README.md#디렉터리-구조)를 참조한다.
+- `config.py`의 `DEFAULT_MODEL="gpt-5-nano"`, `ESCALATION_MODEL="gpt-5"`,
+  `LOW_CONFIDENCE_THRESHOLD=0.7`, `LONG_INPUT_CHAR_THRESHOLD=4000`,
+  `LONG_CONVERSATION_TURN_THRESHOLD=6`을 공통으로 사용한다.
+  신뢰도는 기준 미만, 입력 문자 수와 대화 턴 수는 기준 이상일 때 해당 조건을 만족한다.
+  여러 메시지 입력, 복합 유형, 근거 충돌, 감사 실패 조건과 긴급 분기의 승격 억제는
+  Agent/Middleware에서 별도로 구현한다. 설정 파일 자체는 모델 선택을 수행하지 않는다.
+  타임아웃, 전체 호출 상한, 재시도 횟수의 의미, RAG 설정은 담당자 확정 후 추가한다.
+- `.env.example`은 키 이름을 공유하는 템플릿이다. 실제 키는 환경변수로 전달하며,
+  `config.py`는 파일 탐색, `.env` 자동 로딩 또는 API 호출을 수행하지 않는다.
+  추가 외부 API 환경변수 이름은 해당 담당자가 확정한다.
+- `memory.py`는 Store 접근과 이력 대조를 담당하며, `middleware.py`의
+  `MemoryInjectMiddleware`가 호출하여 `history_matches` 갱신 및 프롬프트 주입을 수행한다.
+  이는 파일 경계의 분리이며 2.5의 이력 조회 Tool 제거 원칙을 유지한다.
+  이력 레코드의 세부 필드와 대조 임계치는 기존 담당자 확인 사항으로 남긴다.
+- 출력 타입은 `from schemas import ScamAssessment, DamageFlags, ActionStep`으로 가져온다.
+  사기 유형, 피해 단계, 위험도는 같은 파일의 `ScamType`, `DamageStage`, `RiskLevel`을 재사용한다.
+- State 및 Context는 `from state import UnHookState, RuntimeContext, create_initial_state`로 가져온다.
+  `UnHookState`는 LangChain `AgentState`를 상속하므로 기본 메시지 누적 reducer와
+  `structured_response` 필드를 유지한다. Agent 조립 시 `state_schema=UnHookState`,
+  `context_schema=RuntimeContext`, 응답 스키마로 `ScamAssessment`를 연결한다.
+- 새 대화에서만 `create_initial_state()`를 사용한다. 후속 턴에 초기값 전체를 전달하면
+  기존 피해 상태를 덮어쓸 수 있으므로 신규 메시지만 전달하고 Checkpointer에서 복원한다.
+- 미확인 피해 여부는 3.1에 따라 `None`으로 시작한다. `False`는 사용자가 부인한 경우다.
+  4.2의 '플래그 모두 false' 사전조건은 해당 테스트의 별도 fixture이며 일반 초기값이 아니다.
+- `DamageFlags`는 이번 턴 추출값이며 State에 별도 중첩 필드로 저장하지 않는다.
+  `DamageStateMiddleware`가 검증 후 개별 State 필드에 반영한다.
+  `damage_stage`와 `risk_level`의 산출 및 역행 방지는 해당 미들웨어의 책임이다.
+- `report_history`는 Store에 저장하며 State에 추가하지 않는다. 세부 레코드 구조가
+  확정되지 않은 `incident_report`, `history_matches`, `tool_results` 내부는 임의의 필드를
+  강제하지 않는다. 담당자가 계약을 확정하면 설계서와 타입을 함께 구체화한다.
+- Tool 반환 타입은 `URLRiskResult`, `CallerVerificationResult`, `PlaybookResult`를 사용한다.
+  `is_official`은 조회 실패 시 `None`을 허용한다. `report_to_authority` 반환은 2.5의 `bool`을 따른다.
+  TypedDict는 정적 계약이므로 실제 외부 응답 검증은 Tool 구현에서 수행한다.
+- `ScamAssessment`는 confidence 범위, evidence 최소 개수, 조치 최대 개수와 우선순위 순서를 검증한다.
+  근거 없는 원시 출력은 이 모델 생성이 실패할 수 있으므로 출력 감사에서 검증 오류도 처리해야 한다.
+  스키마 검증만으로 인젝션, 사실성, PII 또는 한 번에 하나의 질문이라는 의미적 규칙을 보장하지 않는다.
+- 보안 클래스 구현은 `guards.py`, `pii.py`, `audit.py`에서 담당하고,
+  `middleware.py`에서 조립해 `agent.py`로 전달한다. 함수명과 생성자 계약은 각 구현 착수 시 합의한다.
+  RAG 모델, 벡터 스토어, 이력 대조 임계치 등 기존 미정 사항은 아직 확정하지 않았다.
+
+검증 명령(저장소 루트): `python -m unittest discover -s tests -v`
+
 ## 변경 이력
 
 | 일자 | 내용 |
 |---|---|
+| 2026-09-11 | 공통 `config.py`와 `.env.example` 추가. README에 구현 상태와 작업 번호를 표시한 디렉터리 트리 추가, `memory.py`와 `MemoryInjectMiddleware`의 파일별 책임 구분 반영 |
+| 2026-09-11 | 5절 구현 파일 및 공유 계약 추가. `schemas.py`, `state.py`에 2.4/2.5/3.1의 공통 타입과 초기값 구현, 파일별 구현 상태 및 연결 책임 명시 |
 | 2026-09-11 | 기획서 PDF를 마크다운으로 변환 |
 | 2026-09-11 | 「설계서 정합성 검토 및 수정안」 반영 — 2.4 Literal 값·필드명 확정 및 `next_question` 추가, 2.5 `lookup_history` Tool 추가, 3.1 갱신 주체를 Tool/미들웨어로 구분하고 `insufficient_info` 예외 조항 추가, 3.2 `DamageStateMiddleware` 잔여 문구 제거·`MemoryInject` 범위 축소·`TopicFilterMiddleware` 추가, 3.3 G1/G2/G3 위치·트리거를 3.2와 정합, 4.2 필드명 통일 |
 | 2026-09-11 | `update_case` Tool 제거 → `DamageStateMiddleware`(`after_model`)로 대체 (2.4·2.5·3.1·3.2·4.2 연쇄 수정). `get_scam_playbook`을 로컬 JSON 단독에서 금감원·KISA 문서 기반 RAG + 로컬 JSON 폴백으로 변경 |
