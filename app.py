@@ -33,13 +33,17 @@ STAGE_STEPS = [
     ("none", "피해 없음"), ("link_clicked", "링크 클릭"), ("info_exposed", "정보 노출"),
     ("app_installed", "앱 설치"), ("money_sent", "송금"),
 ]
-QUICK_STARTS = ["택배 문자 링크를 눌렀어요", "앱을 설치하라고 해요", "이미 돈을 보냈어요"]
+QUICK_STARTS = [("📦", "택배 문자 링크를 눌렀어요"), ("📱", "앱을 설치하라고 해요"), ("💸", "이미 돈을 보냈어요")]
 # 분석 중 말풍선. 모델 호출은 스트리밍이 아니라 단계 문구를 CSS로 순환시킨다.
 THINKING_STEPS = ["상황을 읽고 있어요", "링크와 번호를 조회하고 있어요", "대응 절차를 찾고 있어요", "답변을 정리하고 있어요"]
 THINKING_HTML = (
+    "<div class='uh-working uh-glass'>"
+    "<div class='uh-working-head'><span>상황을 분석하는 중..</span><span class='uh-working-more'>···</span></div>"
+    "<div class='uh-working-body'>"
     "<div class='uh-thinking'><div class='uh-dots'><span></span><span></span><span></span></div>"
     "<div class='uh-thinking-text'>" + "".join(f"<span>{t}</span>" for t in THINKING_STEPS) + "</div></div>"
     "<div class='uh-skeleton'><i style='width:38%'></i><i style='width:92%'></i><i style='width:80%'></i></div>"
+    "</div></div>"
 )
 # 사이드바 로고: 아바타와 같은 하늘색 유리 질감의 낚싯바늘 (배경 없음).
 LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
@@ -102,6 +106,20 @@ def inject_theme_css() -> None:
           --uh-muted: light-dark(#E5E5E6, #2A2C30);
           --uh-muted-fg: #72767A;
           --uh-radius: 1.3rem;
+          /* 유리 패널: 반투명 흰 면 + 연한 파란 테두리 + 파란 기운의 그림자 */
+          --uh-glass: light-dark(rgba(255,255,255,0.78), rgba(23,24,28,0.72));
+          --uh-glass-border: light-dark(rgba(30,157,241,0.22), rgba(30,157,241,0.35));
+          --uh-glass-shadow: light-dark(0 10px 30px rgba(30,157,241,0.10), 0 10px 30px rgba(0,0,0,0.45));
+        }
+        /* 본문 배경: 위쪽에 아주 연한 하늘빛이 깔린 흰 바탕 */
+        [data-testid="stAppViewContainer"] {
+          background: light-dark(
+            radial-gradient(60rem 30rem at 50% -8rem, #E3ECF6 0%, rgba(227,236,246,0) 70%) #FFFFFF,
+            radial-gradient(60rem 30rem at 50% -8rem, #061622 0%, rgba(6,22,34,0) 70%) #000000);
+        }
+        .uh-glass {
+          background: var(--uh-glass); border: 1.5px solid var(--uh-glass-border); border-radius: var(--uh-radius);
+          box-shadow: var(--uh-glass-shadow); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
         }
         /* 본문 폭: 채팅 열 하나에 집중한다. */
         .block-container { max-width: 46rem; padding-top: 3.25rem; padding-bottom: 2rem; }
@@ -112,7 +130,6 @@ def inject_theme_css() -> None:
         .uh-case {
           display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap;
           padding: 0.85rem 1.1rem 0.85rem 1.25rem; margin-bottom: 1.25rem;
-          background: var(--uh-card); border: 1px solid var(--uh-border); border-radius: var(--uh-radius);
         }
         .uh-case-left { display: flex; flex-direction: column; gap: 0.15rem; }
         .uh-eyebrow { color: var(--uh-muted-fg); font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em; }
@@ -129,7 +146,7 @@ def inject_theme_css() -> None:
         .uh-rail-step::before {
           content: ""; position: absolute; top: 0.25rem; left: 50%; width: 0.7rem; height: 0.7rem; z-index: 1;
           transform: translateX(-50%); border-radius: 50%;
-          background: var(--uh-card); border: 2px solid var(--uh-border); box-sizing: border-box;
+          background: light-dark(#fff, #17181C); border: 2px solid var(--uh-border); box-sizing: border-box;
         }
         .uh-rail-step:not(:first-child)::after {
           content: ""; position: absolute; top: 0.52rem; right: 50%; width: 100%; height: 2px;
@@ -146,6 +163,12 @@ def inject_theme_css() -> None:
         .uh-hero h1 { font-size: 2rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.25; margin: 0 0 0.6rem; }
         .uh-hero p { color: var(--uh-muted-fg); font-size: 1.02rem; line-height: 1.6; margin: 0; max-width: 34rem; }
         .uh-hero-label { color: var(--uh-muted-fg); font-size: 0.82rem; margin: 1.75rem 0 0.35rem; }
+        .st-key-quick_starts button {
+          justify-content: flex-start; text-align: left; min-height: 3.6rem; padding: 0.6rem 1rem;
+          background: var(--uh-glass); border: 1.5px solid var(--uh-glass-border); box-shadow: var(--uh-glass-shadow);
+          border-radius: 1rem; font-weight: 600;
+        }
+        .st-key-quick_starts button:hover { border-color: var(--uh-primary); color: var(--uh-primary); }
 
         /* ── 말풍선 ── */
         [data-testid="stChatMessage"] { padding: 0.35rem 0; background: transparent; gap: 0.75rem; }
@@ -153,9 +176,10 @@ def inject_theme_css() -> None:
           flex-direction: row-reverse; width: 86% !important; margin-left: auto;
         }
         [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageContent"] {
-          background: var(--uh-accent);
+          background: var(--uh-glass); border: 1.5px solid var(--uh-glass-border); box-shadow: var(--uh-glass-shadow);
+          backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
           border-radius: var(--uh-radius) 0.4rem var(--uh-radius) var(--uh-radius);
-          padding: 0.75rem 1.05rem;
+          padding: 0.8rem 1.1rem;
         }
         [data-testid="stChatMessageAvatarUser"] { background: var(--uh-muted) !important; color: var(--uh-fg) !important; }
         [data-testid="stChatMessageAvatarCustom"] {
@@ -167,8 +191,8 @@ def inject_theme_css() -> None:
           filter: drop-shadow(0 8px 14px color-mix(in srgb, var(--uh-primary) 35%, transparent)); }
         .uh-quote {
           margin-top: 0.6rem; padding: 0.6rem 0.85rem;
-          background: light-dark(rgba(255,255,255,0.7), rgba(255,255,255,0.05));
-          border-left: 3px solid var(--uh-primary); border-radius: 0.5rem;
+          background: var(--uh-accent);
+          border-left: 3px solid var(--uh-primary); border-radius: 0.6rem;
           white-space: pre-wrap; word-break: break-word; font-size: 0.9rem; line-height: 1.5;
         }
         .uh-quote-label { color: var(--uh-primary); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; margin-bottom: 0.2rem; }
@@ -177,12 +201,23 @@ def inject_theme_css() -> None:
         .uh-answer-head { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; min-height: 2rem; margin: 0 0 0.75rem; }
         .uh-answer-head .uh-verdict { font-size: 0.85rem; padding: 0.22rem 0.7rem; }
         .uh-answer-meta { color: var(--uh-muted-fg); font-size: 0.85rem; }
-        .uh-h { font-weight: 700; font-size: 0.95rem; margin: 0.9rem 0 0.5rem; }
-        .uh-steps { display: flex; flex-direction: column; gap: 0.4rem; }
+        .uh-h {
+          display: inline-block; margin: 0.9rem 0 0.55rem; padding: 0.22rem 0.8rem; border-radius: 999px;
+          background: var(--uh-accent); color: var(--uh-primary); font-weight: 700; font-size: 0.82rem; letter-spacing: 0.02em;
+        }
+        .uh-steps { display: flex; flex-direction: column; gap: 0.5rem; }
         .uh-step {
           display: flex; gap: 0.8rem; align-items: flex-start;
-          background: var(--uh-card); border: 1px solid var(--uh-border);
-          border-radius: 0.9rem; padding: 0.75rem 0.95rem;
+          background: var(--uh-glass); border: 1.5px solid var(--uh-glass-border); box-shadow: var(--uh-glass-shadow);
+          border-radius: 1rem; padding: 0.8rem 1rem;
+        }
+        .uh-step.first { background: var(--uh-primary); border-color: transparent; color: #fff;
+          box-shadow: 0 10px 24px color-mix(in srgb, var(--uh-primary) 35%, transparent); }
+        .uh-step.first .uh-step-n { background: #fff; color: var(--uh-primary); }
+        .uh-step.first .uh-step-contact { background: rgba(255,255,255,0.22); color: #fff; }
+        .uh-step-first-tag {
+          display: inline-block; margin-left: 0.45rem; padding: 0.05rem 0.5rem; border-radius: 999px;
+          background: #fff; color: var(--uh-primary); font-size: 0.72rem; font-weight: 700; vertical-align: 1px;
         }
         .uh-step-n {
           flex: none; width: 1.55rem; height: 1.55rem; border-radius: 50%; display: grid; place-items: center;
@@ -207,8 +242,8 @@ def inject_theme_css() -> None:
         [data-testid="stChatMessage"] [data-testid="stExpander"] summary:hover { color: var(--uh-primary); }
         [data-testid="stChatMessage"] [data-testid="stExpanderDetails"] { padding: 0.2rem 0 0.4rem; }
         .uh-detail {
-          background: var(--uh-card); border: 1px solid var(--uh-border); border-radius: 0.9rem;
-          padding: 0.25rem 1.1rem; font-size: 0.9rem;
+          background: var(--uh-glass); border: 1.5px solid var(--uh-glass-border); box-shadow: var(--uh-glass-shadow);
+          border-radius: 1rem; padding: 0.25rem 1.1rem; font-size: 0.9rem;
         }
         .uh-detail section { padding: 0.85rem 0; }
         .uh-detail section + section { border-top: 1px dashed var(--uh-border); }
@@ -252,7 +287,11 @@ def inject_theme_css() -> None:
         .uh-check { display: flex; gap: 0.5rem; align-items: center; padding: 0.2rem 0; font-size: 0.9rem; }
         .uh-check.done { color: var(--uh-muted-fg); text-decoration: line-through; }
 
-        /* ── 분석 중 표시 ── */
+        /* ── 분석 중 표시: 제목 줄 + 안쪽 카드 ── */
+        .uh-working { padding: 0.9rem 1.1rem 1rem; }
+        .uh-working-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; font-size: 0.95rem; margin-bottom: 0.7rem; }
+        .uh-working-more { color: var(--uh-muted-fg); letter-spacing: 0.1em; }
+        .uh-working-body { background: var(--uh-card); border-radius: 0.9rem; padding: 0.8rem 0.95rem; }
         .uh-thinking { display: flex; align-items: center; gap: 0.7rem; min-height: 2rem; color: var(--uh-muted-fg); font-size: 0.95rem; }
         .uh-dots { display: inline-flex; gap: 0.28rem; }
         .uh-dots span { width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--uh-primary); opacity: 0.35; }
@@ -262,7 +301,7 @@ def inject_theme_css() -> None:
         .uh-skeleton { display: flex; flex-direction: column; gap: 0.55rem; margin-top: 0.9rem; }
         .uh-skeleton i {
           display: block; height: 0.85rem; border-radius: 999px;
-          background: linear-gradient(90deg, var(--uh-card) 25%, var(--uh-muted) 50%, var(--uh-card) 75%);
+          background: linear-gradient(90deg, var(--uh-border) 25%, var(--uh-muted) 50%, var(--uh-border) 75%);
           background-size: 200% 100%;
         }
         @media (prefers-reduced-motion: no-preference) {
@@ -432,7 +471,7 @@ def render_case_strip(snap: StateSnapshot) -> None:
         cls = "now" if i == current else "done" if i < current else ""
         steps.append(f"<div class='uh-rail-step {cls}'>{label}</div>")
     st.markdown(
-        f"<div class='uh-case' style='{risk_vars(snap.risk_level)}'>"
+        f"<div class='uh-case uh-glass' style='{risk_vars(snap.risk_level)}'>"
         f"<div class='uh-case-left'><span class='uh-eyebrow'>현재 위험도</span>{verdict_html(snap.risk_level)}</div>"
         f"<div class='uh-rail'>{''.join(steps)}</div></div>",
         unsafe_allow_html=True,
@@ -461,9 +500,11 @@ def render_assessment(entry: dict[str, Any]) -> None:
                     contact = f"<a class='uh-step-contact' href='{html.escape(raw)}' target='_blank' rel='noopener'>🔗 {label}</a>"
                 else:
                     contact = f"<span class='uh-step-contact'>☎ {html.escape(raw)}</span>"
+            first = not cards  # 1순위는 채운 카드로 강조한다 (가장 먼저 할 일)
+            tag = "<span class='uh-step-first-tag'>가장 먼저</span>" if first else ""
             cards.append(
-                f"<div class='uh-step'><span class='uh-step-n'>{step['priority']}</span>"
-                f"<div class='uh-step-body'>{html.escape(step['action'])}{contact}</div></div>"
+                f"<div class='uh-step{' first' if first else ''}'><span class='uh-step-n'>{step['priority']}</span>"
+                f"<div class='uh-step-body'>{html.escape(step['action'])}{tag}{contact}</div></div>"
             )
         st.markdown(
             f"<div class='uh-h'>지금 바로 할 일</div><div class='uh-steps' style='{style}'>{''.join(cards)}</div>",
@@ -577,9 +618,10 @@ else:
         "<div class='uh-hero-label'>이런 상황이면 눌러서 바로 시작하세요</div></div>",
         unsafe_allow_html=True,
     )
-    for col, text in zip(st.columns(len(QUICK_STARTS)), QUICK_STARTS):
-        if col.button(text, width="stretch"):
-            quick_pick = text
+    with st.container(key="quick_starts"):
+        for col, (icon, text) in zip(st.columns(len(QUICK_STARTS)), QUICK_STARTS):
+            if col.button(f"{icon} {text}", width="stretch"):
+                quick_pick = text
 
 for entry in st.session_state.history:
     if entry["role"] == "user":
