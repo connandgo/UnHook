@@ -21,7 +21,7 @@
 | Tool 추가·수정 | 2.5 Tool 설계 (docstring은 설계서 문장을 그대로 사용) |
 | State·Context 필드 | 3.1 Context |
 | Middleware hook | 3.2 Middleware |
-| 보안·입력 처리 | 3.3 Guardrails |
+| 보안·입력 처리 | 3.3 Guardrails, 5.1 입력 보안 연결 계약 |
 | 테스트 작성 | 4.1 테스트 시나리오, 4.2 테스트 케이스 |
 
 ## 작업 규칙
@@ -43,12 +43,97 @@ docs/images/           설계서 첨부 이미지
 schemas.py             출력 스키마, 공통 Literal, Tool 결과 타입
 state.py               AgentState, Runtime Context, 새 대화 초기값
 config.py              공통 모델명 및 승격 기준
+guards.py              입력 준비, 주제 필터, 인젝션 탐지, 원문 격리 (③)
 .env.example           환경변수 이름 예시
 requirements.txt       공통 코드 의존성
-tests/                 공통 계약 검증
+tests/                 공통 계약 및 입력 보안 검증
 ```
 
 예정된 구현 파일과 공유 계약은 설계서 5절을 참조한다.
+
+## 입력 보안 연결
+
+③ 구현의 기준은 [설계서 5.1](docs/agent-design.md#51-입력-보안-연결-계약)이다.
+`guards.py`와 공유 타입·설정을 함께 반영해야 한다. 아래는 연결 작업 안내이며 전체 Agent 구현은 아니다.
+
+공격자는 **피해자에게 보낸 원문과 URL 문자열만** 제어한다. 본문 속 판정 지시와 URL 경로·쿼리 속
+판정 지시가 두 공격 예시다. 시스템 직접 접근·공식 RAG 오염·링크 대상 페이지 내부 공격은 범위 밖이다.
+URL은 접속 없이 파싱하며 검사 사본만 한 번 디코딩한다. 원래 URL과 사용자 상담은 보존한다.
+명시적 입력은 `external_texts`를 검사하고, 분리되지 않은 `mixed` 입력만 전체를 검사한다.
+
+### 제공 API
+
+| API | 용도 |
+|---|---|
+| `prepare_guarded_message(user_statement, *, mask_text, external_texts=None)` | 마스킹을 완료한 `HumanMessage` 생성. Agent 호출 및 Checkpointer 저장 전에 사용 |
+| `build_input_middlewares(*, classifier=None)` | TopicFilter → InjectionGuard → ContentIsolation 세 인스턴스 반환. 기본 nano 또는 테스트용 구조화 Runnable 사용 |
+| `GuardInputError` | 빈 입력, 형식·길이 오류, 마스킹 실패. 앱에서 재입력 안내 |
+| `InjectionDecision`, `InputGuardResult` (`schemas.py`) | 판별 출력 및 요청별 결과 계약 |
+| `UnHookState.input_guard` | 최신 메시지 ID·판별 상태·고정 사유 코드. 새 턴에 갱신 |
+
+```python
+from guards import build_input_middlewares, prepare_guarded_message
+
+# Agent 생성 시 middleware 목록에 연결한다. 전체 순서는 ②가 조립한다.
+input_middlewares = build_input_middlewares()
+
+def run_guarded_turn(agent, config, user_statement, mask_text, external_texts=None):
+    message = prepare_guarded_message(
+        user_statement,
+        mask_text=mask_text,  # ④가 제공하는 실제 마스킹 함수
+        external_texts=external_texts,
+    )
+    result = agent.invoke({"messages": [message]}, config=config)
+    return result["structured_response"]
+```
+
+- `mask_text`는 필수다. 원문을 그대로 반환하는 임시 함수로 실제 사용자 입력을 처리하지 않는다.
+  준비 함수를 사용하지 않고 Agent에 원문을 넘기면 가드가 거부하더라도 이미 체크포인트에 저장될 수 있다.
+  앱의 로그·추적에도 마스킹 전 입력을 남기지 않는다.
+- 앱에서 분리한 사용자 진술과 문자 원문만 각각 `user_statement`, `external_texts`로 전달한다.
+  단일 채팅창 입력은 `external_texts`를 생략해 `mixed`로 유지한다. 본문 구분자를 파싱해 출처를 추정하지 않는다.
+- 모델 호출 시 JSON 경계와 보안 정책을 추가하지만 완전한 인젝션 방어를 보장하는 것은 아니다.
+  `not_detected`는 안전 인증이 아니며 판별 오류는 `unavailable`로 구분한다.
+
+### 팀별 연결 작업
+
+| 담당 | 반영할 사항 |
+|---|---|
+| ① Agent | 공통 State·응답 스키마 연결, 입력 준비 후 invoke/ainvoke. 최종 `structured_response` 사용 |
+| ② Middleware | 긴급 분기·최종 감사·보안 보강의 실제 hook 순서 조립. 후속 턴에 State 초기화 금지. 승인 재개는 기존 체크포인트 사용 |
+| ④ 개인정보 | 모델·체크포인트보다 앞에서 호출할 `mask_text(text) -> str` 제공. 토큰화·vault 관리는 별도 연결 |
+| ④ 응답 검증 | 입력 보안의 `after_agent` 보강 이후 최종 구조화 출력도 검사. 원시 AIMessage/스트림을 최종 출력으로 노출하지 않음 |
+| ⑤ Tool·⑥ RAG | 반환 데이터의 개인정보 제거. Tool 결과는 호출 시 불신 데이터로 감싸며 `tool_call_id` 유지 |
+| 통합 | 준비 함수 오류 처리, 사용자 진술/외부 원문 입력 구분, 체크포인트·승인·감사 통합 테스트 |
+
+`before_*`는 등록 순서, `after_*`는 역순으로 실행된다. `wrap_model_call`은 중첩되므로
+ContentIsolation을 메시지를 추가하는 wrapper보다 안쪽에 둔다. 단순히 전체 리스트 끝에
+출력 감사를 붙이면 의도한 실행 순서가 되지 않는다. 요약 미들웨어도 입력 출처와 마스킹을 유지해야 한다.
+현재 구현은 ①·②·④의 완성 코드를 대신하지 않는다.
+최신 main의 `pii.mask_text`는 문자열이 아닌 `MaskResult`를 반환한다. 그대로 이 준비 함수에
+전달하면 타입 검증에서 거부된다. 통합 시 `blocked`를 확인하고 `.text`를 반환하는 어댑터가 필요하며,
+반환된 `.vault`는 원문 출처 구분과 함께 별도로 State에 연결해야 한다. `.text`만 꺼내고 vault를 버리면 안 된다.
+현재 `OutputAuditMiddleware`의 `after_model` 검사만으로는 보안 `after_agent` 보강 이후의
+최종 검사를 대신할 수 없다. 이 두 연결 작업은 이번 PR에서 완료한 것으로 간주하지 않는다.
+④의 마스킹 연결 시 URL에 인코딩된 개인정보도 처리해야 한다. 입력 보안의 URL 디코딩은
+공격 문구 검사 용도이며 개인정보 탐지·마스킹을 대신하지 않는다.
+
+### 검증 및 공유
+
+```bash
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests -v
+```
+
+시연 흐름은 **정상 상담 / 인젝션 포함 원문 상담 / 무관한 요청** 3개다.
+공격 예시는 **본문 삽입형 / URL 삽입형** 2개이며, 피해자가 해당 원문을 전달하는 형태로 테스트한다.
+추가 자동 테스트는 마스킹 연결, 판별 실패, 새 턴·스레드 분리, 동기·비동기 실행 등을 검증한다.
+모의 모델 테스트이므로 실제 nano의 공격 탐지율이나 개인정보 마스킹 정확도를 입증하지 않는다.
+
+보안 연구보고서는 `.gitignore`로 제외한 로컬 참고 자료다. 코드·문서가 이에 의존하지 않도록 유지하고
+`git add -f`로 포함하지 않는다. 공통 변경이 main에 머지된 **이후** 각자 작업 브랜치에서
+`git fetch origin` 및 `git rebase origin/main`으로 반영한다. 충돌 시 공통 타입·설계서 계약을 유지한다.
+이 안내 자체는 커밋·push·merge 완료를 의미하지 않는다.
 
 ## 팀·담당
 
