@@ -33,6 +33,7 @@ class UnHookState(AgentState[ScamAssessment], total=False):
     incident_report: dict[str, Any] | None
     history_matches: list[dict[str, Any]]
     input_guard: InputGuardResult | None
+    emergency_mode: bool
 
 
 def create_initial_state() -> UnHookState:
@@ -54,4 +55,5 @@ def create_initial_state() -> UnHookState:
         "incident_report": None,
         "history_matches": [],
         "input_guard": None,
+        "emergency_mode": False,
     }

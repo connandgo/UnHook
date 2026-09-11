@@ -4,10 +4,14 @@
 외부 API와 Store는 주입·InMemoryStore로 대체해 네트워크 없이 돌아간다.
 """
 
+import json
 import unittest
 import urllib.error
 
+import guards
 from langchain.tools import ToolRuntime
+from pydantic import TypeAdapter, ValidationError
+from schemas import URLRiskResult
 from langgraph.store.memory import InMemoryStore
 
 import memory
@@ -15,10 +19,11 @@ import tools
 from state import RuntimeContext
 
 
-def make_runtime(user_id="U001", store=None):
+def make_runtime(user_id="U001", store=None, messages=None):
     """Tool에 주입되는 ToolRuntime을 테스트용으로 만든다."""
     return ToolRuntime(
-        state={}, context=RuntimeContext(user_id=user_id) if user_id else None,
+        state={"messages": list(messages or [])},
+        context=RuntimeContext(user_id=user_id) if user_id else None,
         config={}, stream_writer=None, tool_call_id="test-call", store=store,
     )
 
@@ -101,6 +106,59 @@ class CheckUrlRiskTests(unittest.TestCase):
     def test_risk_score_never_exceeds_100(self):
         result = tools.analyze_url("http://vv-cj.top/x@evil")
         self.assertLessEqual(result["risk_score"], 100)
+
+
+class URLStatusTests(unittest.TestCase):
+    """설계서 5절 URLStatus. 점수로는 "판단 불가"를 표현할 수 없어 도입된 필드다."""
+
+    def test_status_is_resolved_by_documented_priority(self):
+        for url, expected in (
+            ("이게 뭐야", "malformed"),
+            ("http://vv-cj.top/x", "confirmed"),
+            ("http://kakao.com.evil.ru/login", "suspicious"),
+            ("http://203.0.113.9/kb/login", "suspicious"),
+            ("https://bit.ly/3xK9p", "unverifiable"),
+            ("https://www.naver.com", "clean"),
+            ("https://www.cjlogistics.com", "clean"),
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(tools.analyze_url(url)["status"], expected)
+
+    def test_return_value_satisfies_shared_contract(self):
+        """필수 키 status가 항상 채워진다. 생산자의 타입 계약이다."""
+        adapter = TypeAdapter(URLRiskResult)
+        for url in ("이게 뭐야", "http://vv-cj.top/x", "https://bit.ly/3xK9p",
+                    "https://www.naver.com", "http://a.com@evil.ru/x"):
+            with self.subTest(url=url):
+                adapter.validate_python(tools.analyze_url(url))
+
+    def test_clean_and_unverifiable_share_zero_score_but_differ_in_status(self):
+        """이 구분이 status를 도입한 이유다. 점수만으로는 둘을 나눌 수 없다."""
+        clean = tools.analyze_url("https://www.naver.com")
+        unverifiable = tools.analyze_url("https://bit.ly/3xK9p")
+        self.assertEqual(clean["risk_score"], unverifiable["risk_score"], 0)
+        self.assertNotEqual(clean["status"], unverifiable["status"])
+        self.assertIn("확인 불가", " ".join(unverifiable["signals"]))
+
+    def test_shortener_no_longer_adds_score(self):
+        """단축 URL은 위험이 아니라 판단 보류다. 점수를 올리지 않는다."""
+        self.assertEqual(tools.analyze_url("https://bit.ly/3xK9p")["risk_score"], 0)
+        self.assertNotIn("shortener", tools._CUMULATIVE_SCORES)
+
+    def test_detected_risk_outranks_unverifiable(self):
+        """단축 URL이어도 다른 신호가 있으면 suspicious가 이긴다."""
+        result = tools.analyze_url("http://bit.ly/x")
+        self.assertEqual(result["status"], "suspicious")
+        self.assertGreater(result["risk_score"], 0)
+
+    def test_missing_status_is_not_treated_as_clean(self):
+        """설계서: 누락을 clean으로 기본 처리하지 않는다.
+
+        생산자가 status를 빠뜨리면 계약 검증에서 걸려야 한다.
+        """
+        legacy = {"blacklisted": False, "risk_score": 0, "signals": []}
+        with self.assertRaises(ValidationError):
+            TypeAdapter(URLRiskResult).validate_python(legacy)
 
 
 class VerifyCallerNumberTests(unittest.TestCase):
@@ -225,6 +283,188 @@ class ReportToAuthorityTests(unittest.TestCase):
         second = tools.make_receipt_no("loan_scam")
         self.assertNotEqual(first, second)
         self.assertTrue(first.startswith("UH-LOA-"))
+
+
+class ToolReturnHygieneTests(unittest.TestCase):
+    """AGENTS.md ⑤: 반환 데이터의 개인정보 제거.
+
+    Tool 반환값은 모델을 거쳐 사용자에게 도달하므로, 입력을 반향하거나 외부 API
+    문자열을 그대로 통과시키면 안 된다.
+    """
+
+    def test_url_check_does_not_echo_input(self):
+        """URL 안에 개인정보가 있어도 반환값에 옮겨지지 않는다."""
+        secrets = ("900101-1234567", "110-234-567890", "010-1111-2222")
+        for url in (
+            "http://evil.top/x?rrn=900101-1234567",
+            "http://evil.top/pay?acc=110-234-567890",
+            "http://evil.top/call/010-1111-2222",
+            "http://900101-1234567@evil.top/x",
+        ):
+            with self.subTest(url=url):
+                dumped = json.dumps(tools.analyze_url(url), ensure_ascii=False)
+                for secret in secrets:
+                    self.assertNotIn(secret, dumped)
+                    self.assertNotIn(secret.replace("-", ""), dumped)
+
+    def test_external_company_name_is_scrubbed(self):
+        """외부 API 문자열 속 개인정보는 라벨로 가린다."""
+        fetch = lambda *_a: [
+            {"kor_co_nm": "국민은행 900101-1234567", "cal_tel": "1588-9999"}
+        ]
+        result = tools.verify_number("1588-9999", fetch=fetch)
+        self.assertNotIn("900101", result["company"])
+        self.assertIn("가림", result["company"])
+
+    def test_official_numbers_survive_scrubbing(self):
+        """공식 대표번호는 가리지 않는다. 가리면 대조가 불가능해진다."""
+        fetch = lambda *_a: [{"kor_co_nm": "국민은행", "cal_tel": "1588-9999"}]
+        result = tools.verify_number("1588-9999", "국민은행", fetch=fetch)
+        self.assertIs(result["is_official"], True)
+        self.assertEqual(result["official_numbers"], ["15889999"])
+        self.assertEqual(result["company"], "국민은행")
+
+    def test_oversized_external_string_is_truncated(self):
+        """오염된 응답이 프롬프트를 밀어내지 못하게 길이를 자른다."""
+        fetch = lambda *_a: [{"kor_co_nm": "가" * 5000, "cal_tel": "1588-9999"}]
+        result = tools.verify_number("1588-9999", fetch=fetch)
+        self.assertLessEqual(
+            len(result["company"]), tools.MAX_EXTERNAL_FIELD_CHARS + 1
+        )
+
+    def test_control_characters_are_removed(self):
+        fetch = lambda *_a: [
+            {"kor_co_nm": "국민\x00은행\x1b[31m", "cal_tel": "1588-9999"}
+        ]
+        result = tools.verify_number("1588-9999", fetch=fetch)
+        self.assertNotIn("\x00", result["company"])
+
+
+class PhraseChannelTests(unittest.TestCase):
+    """문구 대조 채널은 문장만 본다. URL·번호는 전용 채널이 따로 있다."""
+
+    def test_url_and_number_leave_the_phrase_channel(self):
+        phrase = memory.normalize_phrase(
+            "[택배] 주소 불일치 반송 http://vv-cj.top/x 010-1111-2222"
+        )
+        self.assertEqual(phrase, "택배주소불일치반송")
+        self.assertNotIn("vvcj", phrase)
+        self.assertNotIn("http", phrase)
+        self.assertNotIn("1111", phrase)
+
+    def test_phrase_match_no_longer_reports_url_fragments(self):
+        """근거 문장에 httpvvcjtop 같은 조각이 나오지 않아야 한다."""
+        store = InMemoryStore()
+        memory.save_report(store, "U100", memory.build_record(
+            "택배 사칭 신고",
+            source_text="[택배] 주소 불일치로 반송 http://vv-cj.top/x",
+            scam_type="smishing", reported=True))
+        matches = memory.match_history(
+            memory.load_history(store, "U100"),
+            "[택배] 주소 불일치로 반송 예정 http://vv-cj.top/k2")
+        phrase_values = [m["value"] for m in matches if m["field"] == "phrase"]
+        self.assertTrue(phrase_values)
+        for value in phrase_values:
+            self.assertNotIn("http", value)
+            self.assertNotIn("vvcj", value)
+
+    def test_reused_scam_text_matches_despite_edits(self):
+        """같은 문구를 조금 고쳐 재사용해도 잡는다. 연속 부분문자열로는 놓친다."""
+        for past, current in (
+            ("[택배] 주소 불일치로 반송 http://vv-cj.top/x",
+             "[택배] 주소지 불일치 반송 예정(http://vv-cj.top/k2) 또 왔어요"),
+            ("[Web발신] 고객님 명의로 해외결제가 승인되었습니다",
+             "[Web발신] 고객님 명의로 해외 결제가 승인 되었습니다 확인바랍니다"),
+        ):
+            with self.subTest(past=past):
+                score = memory.phrase_similarity(
+                    memory.normalize_phrase(past), memory.normalize_phrase(current))
+                self.assertIsNotNone(score)
+
+    def test_unrelated_text_does_not_match(self):
+        """한국어 어미가 겹쳐도 무관한 문장은 일치로 보지 않는다."""
+        for left, right in (
+            ("[택배] 주소 불일치로 반송", "오늘 점심 뭐 먹지 날씨가 좋다"),
+            ("[택배] 주소 불일치로 반송", "엄마 나 폰 액정 깨져서 이 번호로 연락해"),
+            ("국민은행 대출 안내입니다", "카카오톡 인증번호 안내"),
+            # 어미만 겹치는 짧은 인사말. 임계치를 올리기 전에는 70%로 잡혔다.
+            ("안녕하세요 반갑습니다", "안녕히 가세요 고맙습니다"),
+            ("계좌가 정지되었습니다 확인하세요", "택배가 도착했습니다 확인하세요"),
+        ):
+            with self.subTest(left=left):
+                self.assertIsNone(memory.phrase_similarity(
+                    memory.normalize_phrase(left), memory.normalize_phrase(right)))
+
+    def test_phrase_value_is_similarity_not_raw_text(self):
+        """근거 문장에 정규화된 원문을 그대로 노출하지 않는다."""
+        store = InMemoryStore()
+        memory.save_report(store, "U200", memory.build_record(
+            "택배 사칭", source_text="[택배] 주소 불일치로 반송 예정입니다",
+            scam_type="smishing", reported=True))
+        matches = memory.match_history(
+            memory.load_history(store, "U200"), "[택배] 주소 불일치로 반송 예정이래요")
+        phrase = next(m for m in matches if m["field"] == "phrase")
+        self.assertRegex(phrase["value"], r"^\d{1,3}%$")
+        self.assertIn("문구가 유사합니다", memory.describe_matches([phrase])[0])
+
+    def test_subject_particle_follows_final_consonant(self):
+        """"도메인가"처럼 쓰지 않는다."""
+        self.assertEqual(memory._with_subject_particle("도메인"), "도메인이")
+        self.assertEqual(memory._with_subject_particle("발신번호"), "발신번호가")
+        self.assertEqual(memory._with_subject_particle("문구"), "문구가")
+
+    def test_description_reads_naturally(self):
+        match = memory.HistoryMatch(
+            key="r1", field="domain", value="vv-cj.top",
+            summary="택배 사칭", scam_type="smishing", reported=True)
+        line = memory.describe_matches([match])[0]
+        self.assertIn("도메인이 일치합니다", line)
+        self.assertNotIn("도메인가", line)
+
+
+class ReportHistoryCaptureTests(unittest.TestCase):
+    """4.2 TS-05는 "문구·도메인 패턴이 동일"을 요구한다.
+
+    신고 대상(target)만 저장하면 문구 채널이 비어 경고가 절반만 나간다.
+    """
+
+    @staticmethod
+    def _message(external):
+        return guards.prepare_guarded_message(
+            "이 문자 뭐야?", mask_text=lambda t: t, external_texts=[external])
+
+    def test_pasted_text_reaches_report_history(self):
+        store = InMemoryStore()
+        message = self._message("[택배] 주소 불일치로 반송 http://vv-cj.top/x")
+        tools.report_to_authority.func(
+            "smishing", "http://vv-cj.top/x", "택배 사칭 신고",
+            make_runtime("U001", store, messages=[message]))
+        _, record = memory.load_history(store, "U001")[0]
+        self.assertEqual(record["phrase"], "택배주소불일치로반송")
+        self.assertEqual(record["domains"], ["vv-cj.top"])
+
+    def test_ts05_reports_both_domain_and_phrase(self):
+        store = InMemoryStore()
+        memory.save_report(store, "U001", memory.build_record(
+            "택배 사칭 신고",
+            source_text="[택배] 주소 불일치로 반송 http://vv-cj.top/x",
+            scam_type="smishing", reported=True))
+        matches = memory.match_history(
+            memory.load_history(store, "U001"),
+            "[택배] 주소지 불일치 반송 예정(http://vv-cj.top/k2) 또 왔어요")
+        self.assertEqual({m["field"] for m in matches}, {"domain", "phrase"})
+
+    def test_malformed_messages_do_not_raise(self):
+        """형식이 다른 메시지를 만나도 예외를 올리지 않는다."""
+        for messages in (None, [], ["문자열"], [object()]):
+            with self.subTest(messages=messages):
+                self.assertEqual(memory.source_text_from_messages(messages), "")
+
+    def test_pii_tokens_leave_the_phrase_channel(self):
+        """PIIMiddleware가 남긴 토큰이 문구 비교에 섞이면 안 된다."""
+        phrase = memory.normalize_phrase("[택배] 반송 <SCAM_PHONE_1> 확인")
+        self.assertNotIn("scamphone", phrase)
+        self.assertNotIn("<", phrase)
 
 
 class ToolWiringTests(unittest.TestCase):

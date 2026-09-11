@@ -5,6 +5,11 @@
 
 Tool은 State를 직접 쓰지 않는다 (설계서 3.1 핵심 원칙). 조회 결과는 반환값으로만
 돌려주고, State 반영은 미들웨어가 담당한다.
+
+반환 데이터에는 개인정보를 남기지 않는다 (AGENTS.md 팀별 연결 작업 ⑤).
+외부 API 응답처럼 이 모듈이 내용을 통제할 수 없는 문자열은 `_scrub()`으로 한 번 거른다.
+`ContentIsolationMiddleware`(묶음 3)가 ToolMessage를 `untrusted_tool_result`로 감싸지만
+그것은 구조적 격리이며 내용 검사는 아니다.
 """
 
 from __future__ import annotations
@@ -23,7 +28,13 @@ from typing import Any
 from langchain.tools import ToolRuntime, tool
 
 import memory
-from schemas import CallerVerificationResult, PlaybookResult, URLRiskResult
+from schemas import (
+    CallerVerificationResult, PlaybookResult, URLRiskResult, URLStatus,
+)
+
+# 외부 문자열 1건의 상한. 초과분은 자른다. 조회 결과 식별에는 충분하고,
+# 오염된 응답이 프롬프트를 밀어내는 것을 막는다.
+MAX_EXTERNAL_FIELD_CHARS = 120
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 KISA_URL_CSV = DATA_DIR / "kisa_urls.csv"
@@ -57,11 +68,13 @@ _DECISIVE_SCORES = {
 _CUMULATIVE_SCORES = {
     "lookalike": 25,
     "suspicious_tld": 20,
-    # 단축 URL은 위험한 것이 아니라 목적지를 판단할 수 없는 것이다.
-    # 정상 기업도 쓰므로 낮게 두고, signals에 확인 불가를 명시한다 (설계서 1.5 안정성).
-    "shortener": 15,
     "short_path": 10,
 }
+
+# 단축 URL은 위험한 것이 아니라 목적지를 판단할 수 없는 것이다. 정상 기업도 쓴다.
+# 점수로 표현하면 "낮은 위험"과 구분되지 않으므로 status="unverifiable"이 대신한다
+# (설계서 1.5 안정성, 5절 URLStatus).
+_UNVERIFIABLE_SIGNAL = "단축 URL 서비스 도메인 (실제 목적지 확인 불가)"
 
 # 설계서 1.3 S1: 비정상 TLD. 실습 범위에서 자주 쓰이는 목록만 둔다.
 _SUSPICIOUS_TLDS = {
@@ -105,6 +118,30 @@ _IPV4_HOST_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 _HOST_RE = re.compile(r"^[\w.-]+$")
 
 _blacklist_cache: set[str] | None = None
+
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _scrub(value: str) -> str:
+    """이 모듈이 통제할 수 없는 외부 문자열을 반환 전에 거른다.
+
+    개인정보는 `audit.mask_output_pii`로 라벨 처리한다. 묶음 4의 출력 쪽 규칙을
+    그대로 쓰는 이유는 Tool 반환값도 모델을 거쳐 사용자에게 도달하기 때문이다.
+    `pii.mask_text`는 토큰화를 하므로 쓰지 않는다 — vault를 함께 넘기지 않는
+    자리에서는 해석 불가능한 토큰만 남는다.
+    """
+    if not value:
+        return ""
+    text = _CONTROL_CHARS_RE.sub(" ", str(value)).strip()
+    if len(text) > MAX_EXTERNAL_FIELD_CHARS:
+        text = text[:MAX_EXTERNAL_FIELD_CHARS].rstrip() + "…"
+    try:
+        import audit
+        masked, _ = audit.mask_output_pii(text, None)
+        return masked
+    except ImportError:
+        # audit.py가 없어도 Tool 자체는 동작해야 한다. 길이·제어문자 정제는 유지된다.
+        return text
 
 
 # ---------------------------------------------------------------------------
@@ -188,15 +225,23 @@ def analyze_url(url: str) -> URLRiskResult:
 
     결정적 신호는 하한선을, 보강 신호는 누적 합계를 만들고 둘 중 큰 값을 쓴다.
     점수가 포화해도 signals에는 탐지된 근거를 모두 남긴다 (설계서 2.4 evidence).
+
+    `status`는 "판단 불가"를 점수와 구분하기 위한 값이다. 검사 후 깨끗한 `clean`과
+    목적지를 보지 못한 `unverifiable`은 둘 다 점수가 0이지만 의미가 정반대다
+    (설계서 5절 URLStatus).
     """
     host, path = _split_url(url)
     if not host:
         # 설계서 2.5: 형식 불명 URL이면 risk_score=0, signals=["형식 불명"].
-        return URLRiskResult(blacklisted=False, risk_score=0, signals=["형식 불명"])
+        return URLRiskResult(
+            status="malformed", blacklisted=False, risk_score=0,
+            signals=["형식 불명"],
+        )
 
     signals: list[str] = []
     decisive = 0
     cumulative = 0
+    shortener = False
 
     def hit_decisive(key: str, message: str) -> None:
         nonlocal decisive
@@ -227,9 +272,9 @@ def analyze_url(url: str) -> URLRiskResult:
         hit_cumulative("suspicious_tld", f"비정상 TLD .{tld}")
 
     if host in _SHORTENER_HOSTS:
-        hit_cumulative(
-            "shortener", "단축 URL 서비스 도메인 (실제 목적지 확인 불가)"
-        )
+        # 점수를 올리지 않는다. 위험 판정이 아니라 판단 보류다.
+        shortener = True
+        signals.append(_UNVERIFIABLE_SIGNAL)
 
     # 알려진 정상 도메인은 브랜드 부분 문자열 매칭에서 제외한다.
     # cjlogistics.com은 CJ대한통운의 정식 도메인이지 사칭이 아니다.
@@ -246,14 +291,36 @@ def analyze_url(url: str) -> URLRiskResult:
     if trimmed and len(trimmed) <= 3 and "/" not in trimmed:
         hit_cumulative("short_path", "단축형 경로")
 
+    status = _resolve_status(blacklisted, decisive, cumulative, shortener)
+    if status in ("unverifiable", "clean"):
+        # 위험을 탐지하지 못한 상태다. 점수로 위험의 세기를 말하지 않는다.
+        score = 0
+    else:
+        score = min(max(decisive, cumulative), 100)
+
     if not signals:
         signals.append("알려진 위험 신호 없음")
 
     return URLRiskResult(
-        blacklisted=blacklisted,
-        risk_score=min(max(decisive, cumulative), 100),
-        signals=signals,
+        status=status, blacklisted=blacklisted, risk_score=score, signals=signals
     )
+
+
+def _resolve_status(
+    blacklisted: bool, decisive: int, cumulative: int, shortener: bool
+) -> URLStatus:
+    """설계서 5절 판정 우선순위. 위에서부터 먼저 적용한다.
+
+    `malformed`는 호출부에서 이미 처리했다. 단축 URL은 다른 신호가 하나라도 있으면
+    `suspicious`가 이긴다 — 판단 보류보다 탐지된 위험이 우선이다.
+    """
+    if blacklisted:
+        return "confirmed"
+    if decisive or cumulative:
+        return "suspicious"
+    if shortener:
+        return "unverifiable"
+    return "clean"
 
 
 @tool
@@ -314,11 +381,11 @@ def verify_number(
             is_official=None, official_numbers=[], company=company_name or ""
         )
 
-    wanted = company_name.strip() if company_name else ""
+    wanted = _scrub(company_name) if company_name else ""
     matched_company = ""
     official_numbers: list[str] = []
     for entry in companies:
-        name = str(entry.get("kor_co_nm") or "")
+        name = _scrub(str(entry.get("kor_co_nm") or ""))
         number = memory.normalize_phone(str(entry.get("cal_tel") or ""))
         if not number:
             continue
@@ -372,8 +439,14 @@ def report_to_authority(
     receipt_no = make_receipt_no(scam_type)
     store = getattr(runtime, "store", None)
     if store is not None:
+        # target만으로는 도메인·번호만 남고 문구 채널이 비어 TS-05 재방문 경고가
+        # 절반만 동작한다. 대화의 붙여넣은 원문을 함께 넣는다.
+        pasted = memory.source_text_from_messages(
+            (getattr(runtime, "state", None) or {}).get("messages")
+        )
         record = memory.build_record(
-            summary, source_text=target, scam_type=scam_type, reported=True
+            summary, source_text=f"{target} {pasted}".strip(),
+            scam_type=scam_type, reported=True
         )
         record["receipt_no"] = receipt_no
         # 설계서 2.5: 실패 시 예외 발생, 재시도 안 함.
