@@ -100,6 +100,8 @@ Un Hook는 사용자가 보이스피싱, 스미싱, 메신저 피싱 등 금융�
 
 ![전체 구조도](images/architecture.png)
 
+> 그림에는 생략되어 있으나, `EmergencyRouteMiddleware`(3.2)가 `money_sent=True`를 감지하면 Agent 실행부에서 모델·Tool 호출 없이 곧바로 응답 검증으로 넘어가는 조기 종료 경로(`jump_to="end"`)가 있다. 2.2 동작 흐름도의 "긴급 안내 준비" 분기가 이에 해당한다.
+
 | 구성요소 | 역할 | 구현 기준 |
 |---|---|---|
 | 사용자 입력 | 의심 문자 원문과 본인이 실제로 한 행동을 입력 | 붙여넣은 문자와 사용자 설명을 구분한다. 문자 속 "송금했다"를 사용자의 피해 사실로 처리하지 않는다. |
@@ -166,6 +168,8 @@ Middleware는 실행 중간에 로직을 넣는 위치와 방법이다. Guardrai
 
 ### 2.3 LLM 모델 설계
 
+구현 범위: ○ 이번 구현 범위 / △ 설계 반영, 여력 시 구현
+
 | 모델 이름 | 항목 | 내용 |
 |---|---|---|
 | **gpt-5-nano**<br>(기본 모델) | 모델 선정 이유 | 금융사기 유형 분류, 위험 신호 추출, 피해 단계 갱신, 간단한 추가 질문 생성처럼 짧고 반복적인 작업을 빠르게 처리하기 위해 기본 모델로 사용한다. 대부분의 일반적인 요청을 nano에서 완료하여 응답시간과 비용을 줄인다. |
@@ -173,7 +177,7 @@ Middleware는 실행 중간에 로직을 넣는 위치와 방법이다. Guardrai
 | | 주요 설정 | `model="gpt-5-nano"`<br>`reasoning_effort="minimal"` 또는 `"low"`<br>`timeout=20`<br>`max_output_tokens=800` |
 | | 처리 대상 | 단일 문자 또는 URL 분석, 명확한 스미싱 패턴, 간단한 기관 사칭 확인, 피해가 발생하지 않은 일반 문의, 기존 State에 따라 다음 질문을 선택할 수 있는 경우 |
 | | 제약사항 | 판단 근거가 부족하면 임의로 결론을 만들지 않는다. `risk_level="insufficient_info"`로 처리하고 한 번에 하나의 추가 질문만 생성한다. |
-| **gpt-5**<br>(보조 모델, 시간 되면) | 모델 선정 이유 | 입력량이 많거나 여러 사기 유형이 섞인 경우, Tool 결과가 충돌하는 경우처럼 더 정교한 추론이 필요할 때만 사용한다. |
+| **gpt-5**<br>(보조 모델, 구현 범위 △) | 모델 선정 이유 | 입력량이 많거나 여러 사기 유형이 섞인 경우, Tool 결과가 충돌하는 경우처럼 더 정교한 추론이 필요할 때만 사용한다. |
 | | 주요 역할 | 긴 대화 내역 분석, 복합 사기 유형 판정, 상충하는 근거 비교, 낮은 신뢰도의 2차 검토, 고위험 상황의 출력 감사 |
 | | 주요 설정 | `model="gpt-5"`<br>`reasoning_effort="medium"`<br>`timeout=30`<br>`max_output_tokens=1200` |
 | | 호출 조건 | 아래 승격 조건 중 하나 이상을 만족하는 경우에만 호출한다. |
@@ -202,16 +206,46 @@ output명: `ScamAssessment`
 
 | 필드명 | 데이터 타입 | 필수 | 제약조건 | 설명 |
 |---|---|---|---|---|
-| `scam_type` | `Literal["voice_phishing", "url"]` | 필수 | 지정된 유형만 허용 | 사기 유형 분류 |
-| `risk_level` | `Literal["low", "middle", "high"]` | 필수 | 근거 부족 시 `insufficient_info` | 최종 위험도 |
-| `damage_stage` | `Literal[]` | 필수 | State와 동기화 | 현재 피해 단계 |
-| `confidence` | `float` | 필수 | 0.0 ~ 1.0 | nano 결과 사용 또는 gpt-5 승격 판단 |
+| `scam_type` | `Literal["smishing", "voice_phishing", "messenger_phishing", "loan_scam", "gov_impersonation", "investment_scam", "unknown"]` | 필수 | 지정된 유형만 허용. 1.2 FR-01의 5유형 + `unknown` | 사기 유형 분류 |
+| `risk_level` | `Literal["critical", "high", "medium", "low", "insufficient_info"]` | 필수 | 근거 부족 시 `insufficient_info` | 최종 위험도 |
+| `damage_stage` | `Literal["none", "link_clicked", "info_exposed", "app_installed", "money_sent"]` | 필수 | State와 동기화. `update_case` 반환값과 동일 값 집합 | 현재 피해 단계 |
+| `confidence` | `float` | 필수 | 0.0 ~ 1.0 | nano 결과 사용 또는 gpt-5 승격 판단 (`< 0.7`이면 승격) |
 | `evidence` (verified_facts 포함) | `list[str]` | 필수 | 최소 1개 | signals, URL 검사 결과, 공식번호 조회 결과를 사람이 이해할 수 있는 문장으로 저장 |
 | `unverified` | `list[str]` | 필수 | 확인 불가 항목이 없으면 `[]` | `is_official=None` 등 Tool 실패·확인 불가 결과 저장 |
 | `immediate_actions` | `list[ActionStep]` | 필수 | 최대 5개, 우선순위 정렬 | steps를 사용자 행동으로 변환 |
+| `next_question` | `str \| None` | 선택 | 한 번에 1개만. 정보가 충분하면 `None` | 추가 질문 (2.2 6단계) |
 | `injection_detected` | `bool` | 필수 | 항상 반환 | 프롬프트 인젝션 탐지 여부 |
 
-> **TODO**: 원본 설계서 기준 `scam_type`과 `damage_stage`의 `Literal` 값 목록이 아직 확정되지 않았다. 3.1 Context의 `risk_level`은 `critical/high/medium/low` 4단계로 정의되어 있어 이 표의 `low/middle/high`와 정합 필요.
+#### 확정 스키마 (복사해 사용)
+
+```python
+class ScamAssessment(BaseModel):
+    scam_type: Literal["smishing", "voice_phishing", "messenger_phishing",
+                       "loan_scam", "gov_impersonation",
+                       "investment_scam", "unknown"]
+    risk_level: Literal["critical", "high", "medium", "low",
+                        "insufficient_info"]
+    damage_stage: Literal["none", "link_clicked", "info_exposed",
+                          "app_installed", "money_sent"]
+    confidence: float                      # 0.0 ~ 1.0
+    evidence: list[str]                    # 최소 1개
+    unverified: list[str]                  # 확인 불가 항목, 없으면 []
+    immediate_actions: list[ActionStep]    # 최대 5개, 우선순위 정렬
+    next_question: str | None              # 한 번에 1개만
+    injection_detected: bool
+```
+
+#### 필드명 통일 규칙
+
+2.4 스키마·2.5 Tool·4.2 테스트 케이스는 아래 이름으로 통일한다. 괄호 안은 폐기한 표기.
+
+| 통일 명칭 | 폐기 표기 | 비고 |
+|---|---|---|
+| `scam_type` | `fraud_type` | 2.5 `get_scam_playbook` 입력 파라미터명 기준 |
+| `immediate_actions` | `next_actions` | `ActionStep` 타입과 함께 사용 |
+| `next_question` | `follow_up_question` | 2.2 본문 기준 |
+| `damage_flags` | `damage_status` | 3.1 State의 `link_clicked` ~ `money_sent` 묶음을 가리키는 명칭 |
+| `elapsed_minutes` | `elapsed_min` | 2.5 Tool 파라미터명 기준 |
 
 ### 2.5 Tool 설계
 
@@ -219,20 +253,22 @@ output명: `ScamAssessment`
 |---|---|---|---|---|---|---|
 | `check_url_risk` | 문자에 포함된 URL이 알려진 피싱 사이트인지 확인하고, 단축 URL·유사 도메인·IP 직접 주소·비정상 TLD 등 위험 신호를 검사합니다. | `url: str` (필수) | `dict` (`blacklisted: bool`, `risk_score: int`, `signals: list[str]`) | Custom(Python) + 로컬 데이터<br>KISA 피싱사이트 URL CSV | 형식 불명 URL이면 `risk_score=0`, `signals=["형식 불명"]` 반환 (예외 미발생) | 없음 |
 | `verify_caller_number` | 걸려온 전화번호가 해당 금융회사의 공식 대표번호인지 대조합니다. 기관 사칭 판별에 사용합니다. | `phone: str` (필수), `company_name: str` (선택) | `dict` (`is_official: bool`, `official_numbers: list[str]`, `company: str`) | API<br>금감원 finlife companySearch (`cal_tel` 필드) | 타임아웃 3회 재시도 후 `is_official=None` → `unverified`에 기록 | 없음 |
-| `get_scam_playbook` | 사기 유형과 현재 피해 단계에 맞는 공식 대응 절차와 신고 기관 연락처를 조회합니다. | `scam_type: str` (필수), `damage_stage: str` (필수) | `dict` (`steps: list[str]`, `contacts: list[str]`) | 로컬 JSON (5유형 × 3단계 = 15개 조합) | 매칭 실패 시 공통 기본 절차 폴백 | 없음 |
+| `get_scam_playbook` | 사기 유형과 현재 피해 단계에 맞는 공식 대응 절차와 신고 기관 연락처를 조회합니다. | `scam_type: str` (필수), `damage_stage: str` (필수) | `dict` (`steps: list[str]`, `contacts: list[str]`) | 로컬 JSON (5유형 × 3단계 = 15개 조합)<br>※ 2.4 확정값은 `scam_type` 7개 · `damage_stage` 5개이므로 JSON 키 매핑 확정 필요 — `unknown`은 공통 절차, `none`/`link_clicked`/`info_exposed`·`app_installed`/`money_sent`를 3단계로 묶는 방식 제안 | 매칭 실패 시 공통 기본 절차 폴백 | 없음 |
 | `update_case` | 사용자 답변에서 확인된 피해 진행 정보를 케이스에 기록하고, 갱신된 피해 단계와 위험도를 반환합니다. 링크 클릭·정보 입력·앱 설치·송금 여부가 새로 확인될 때마다 호출하십시오. | `link_clicked: bool` (선택)<br>`info_exposed: list[str]` (선택)<br>`app_installed: bool` (선택)<br>`money_sent: bool` (선택)<br>`sent_amount: int` (선택)<br>`elapsed_minutes: int` (선택) | `dict` (`damage_stage: str`, `risk_level: str`, `golden_time: bool`) | Custom(Python)<br>세션 상태 기록 | 인자가 하나도 없으면 현재 상태 그대로 반환, 이전 값보다 낮은 갱신은 무시하고 기존 값 유지 (예외 미발생) | `user_id` (Runtime Context) |
 | `report_to_authority` | 확인된 사기 건을 신고 기관에 접수합니다. 실행 전 반드시 사용자 승인이 필요합니다. | `scam_type: str`, `target: str`, `summary: str` (모두 필수) | `bool` | Custom(mock) + 사람의 승인 필요 | 미승인 시 실행 중단. 실패 시 예외 발생, 재시도 안 함 | `user_id` (Runtime Context) |
+| `lookup_history` | 현재 사용자의 과거 신고 이력을 조회합니다. 입력된 문구·도메인·번호가 과거 신고 건과 일치하는지 확인할 때 호출하십시오. | 없음 | `list[dict]` (마스킹된 사건 요약, 도메인 패턴, 실제 신고 여부) | Store (3.1 `report_history`) | 이력이 없으면 빈 리스트 반환 (예외 미발생) | `user_id` (Runtime Context) |
 
 #### `update_case` 설계 원칙
 
-`damage_stage`와 `risk_level`을 모델이 판단하지 않고 도구가 산출한다. 단계 전이와 위험도 매핑을 코드에 고정하여 환각과 오판을 차단한다.
+`damage_stage`와 `risk_level`을 모델이 판단하지 않고 도구가 산출한다. 단계 전이와 위험도 매핑을 코드에 고정하여 환각과 오판을 차단한다. 반환하는 `damage_stage`·`risk_level`은 2.4 `ScamAssessment`와 동일한 값 집합을 사용한다.
 
 #### Tool 간 호출 순서 의존성
 
 1. `check_url_risk` / `verify_caller_number` — 입력에 해당 값이 존재할 때만 조건부 호출. 둘 다 호출되지 않는 케이스가 존재함. 해당 케이스일 때는 되묻기 진행.
-2. `update_case` → 되묻기에 대한 사용자 답변에서 새로운 피해 정보가 확인될 때마다 호출. 조회형 도구와 독립적이며, 조회 없이 이 도구만 반복 호출되는 턴이 존재함.
-3. `get_scam_playbook` — `scam_type`(모델 판정)과 `damage_stage`(`update_case` 반환값)이 모두 확정된 뒤에 호출.
-4. `report_to_authority`는 판정 완료 후 사용자가 명시적으로 요청한 경우에만 호출.
+2. `lookup_history` — 새 세션 첫 턴 또는 입력에 문구·도메인·번호가 포함된 경우 조회. 조회형 도구이며 `check_url_risk`와 같은 턴에 호출될 수 있음.
+3. `update_case` → 되묻기에 대한 사용자 답변에서 새로운 피해 정보가 확인될 때마다 호출. 조회형 도구와 독립적이며, 조회 없이 이 도구만 반복 호출되는 턴이 존재함.
+4. `get_scam_playbook` — `scam_type`(모델 판정)과 `damage_stage`(`update_case` 반환값)이 모두 확정된 뒤에 호출.
+5. `report_to_authority`는 판정 완료 후 사용자가 명시적으로 요청한 경우에만 호출.
 
 > docstring은 모델이 "언제 이 Tool을 호출할지" 판단하는 근거이므로, 위 문장을 실제 코드에 그대로 사용한다.
 
@@ -249,22 +285,23 @@ output명: `ScamAssessment`
 | `user_id` | Runtime Context | `str` | 앱 호출 시 전달 | 호출 1회 (불변) | 전체 미들웨어 | 사용자 식별, Store 네임스페이스 분리 | ○ |
 | `age_group` | Runtime Context | `str` (`general`/`senior`) | 사용자 프로필 | 호출 1회 | `wrap_model_call` | 고령층이면 문장 단순화·조치 1개씩 제시 | △ |
 | `channel` | State | `str` (`sms`/`call`/`messenger`/`unknown`) | 입력 내용에서 추론 | 매 turn | `before_model` | 유형 분류 힌트 제공 | △ |
-| `link_clicked` | State | `bool \| None` | 사용자 답변 | 매 turn | `after_model` | 피해 단계 판정. `None`=미확인(질문 필요), `False`=안 눌렀다고 답함 | ○ |
-| `personal_info_exposed` | State | `list[str]` (최대 10건) | 사용자 답변 | 매 turn | `after_model` | 노출 항목 종류만 저장 (원문 미저장) | ○ |
-| `app_installed` | State | `bool \| None` | 사용자 답변 | 매 turn | `after_model` | 원격제어 위험 판정 | ○ |
-| `money_sent` | State | `bool \| None` | 사용자 답변 | 매 turn | `after_model` | critical 승격 트리거 | ○ |
-| `sent_amount` | State | `int \| None` | 사용자 답변 | 송금 확인 시 | `after_model` | 피해 규모 기록 (위험도 산정에는 미사용, 신고 요약용) | △ |
+| `link_clicked` | State | `bool \| None` | 사용자 답변 | 매 turn | `update_case` (Tool) | 피해 단계 판정. `None`=미확인(질문 필요), `False`=안 눌렀다고 답함 | ○ |
+| `personal_info_exposed` | State | `list[str]` (최대 10건) | 사용자 답변 | 매 turn | `update_case` (Tool) | 노출 항목 종류만 저장 (원문 미저장) | ○ |
+| `app_installed` | State | `bool \| None` | 사용자 답변 | 매 turn | `update_case` (Tool) | 원격제어 위험 판정 | ○ |
+| `money_sent` | State | `bool \| None` | 사용자 답변 | 매 turn | `update_case` (Tool) | critical 승격 트리거 | ○ |
+| `sent_amount` | State | `int \| None` | 사용자 답변 | 송금 확인 시 | `update_case` (Tool) | 피해 규모 기록 (위험도 산정에는 미사용, 신고 요약용) | △ |
 | `elapsed_minutes` | State | `int \| None` | 사용자 답변 + 시스템 현재시각 보정 | 송금 확인 시 | `before_agent` | 지급정지 안내 긴급도 조절. 불확실 시 짧은 쪽으로 보수적 판정 | ○ |
 | `risk_level` | State | `Literal["critical","high","medium","low"]` | `update_case` 반환값 | 매 turn | `before_model` | 직전 위험도 유지로 단계 역행 방지 | ○ |
 | `messages` | State | `list[Message]` | 이전 turn 누적 | 매 turn | `before_model` | 대화 맥락 유지 (LangGraph 기본 키) | ○ |
 | `tool_results` | State (임시) | `dict` | Tool 반환값 | 매 요청 (턴 종료 시 초기화) | `wrap_tool_call` | 동일 URL·번호 재조회 방지, 근거(evidence) 주입 | ○ |
-| `report_history` | Store (장기) | `list[dict]` (최근 5건) | 과거 세션 누적 | 세션 간 영속 | `wrap_model_call` | 재접근 시 반복 피해 경고 | △ |
+| `report_history` | Store (장기) | `list[dict]` (최근 5건) | 과거 세션 누적 | 세션 간 영속 | `lookup_history` (Tool) | 재접근 시 반복 피해 경고 | △ |
 
 #### 핵심 원칙
 
 - 개인정보는 "무엇이 노출됐는지"만 저장하고 값 자체는 저장하지 않는다. 예: `personal_info_exposed=["주민번호","계좌번호"]` — 실제 번호는 보관하지 않음.
 - 피해 단계 플래그(`link_clicked` ~ `money_sent`)는 요약 대상에서 제외한다. 대화 이력 요약 과정에서 유실되면 위험도 판정이 틀어지기 때문이다.
-- 피해 단계와 위험도는 단조 증가한다. 이전 값보다 낮은 판정은 `update_case` Tool 내부에서 무시한다.
+- 피해 단계와 위험도는 단조 증가한다. 이전 값보다 낮은 판정은 `update_case` Tool 내부에서 무시한다. 단, 판단 근거(`evidence`)가 확보되지 않은 경우 `risk_level`을 `insufficient_info`로 전환하는 것(3.3 G6)은 본 원칙의 예외로 한다. 이는 위험도 하향이 아니라 판정 보류에 해당한다.
+- State 갱신 주체는 두 가지로 구분한다. 피해 플래그(`link_clicked` ~ `sent_amount`)와 `risk_level`은 `update_case` Tool이, `elapsed_minutes`·`channel`·`messages`·`tool_results`는 미들웨어가 갱신한다. `after_model`에서 State를 갱신하는 미들웨어는 두지 않는다.
 
 ### 3.2 Middleware
 
@@ -275,10 +312,11 @@ Hook 종류: `before_agent`(호출 시 1회) → `before_model`(모델 호출 �
 | Middleware 이름 | Hook 지점 | 목적 | 개입 대상 | 트리거 조건 | 실패/예외 시 동작 | 구분 | 구현 |
 |---|---|---|---|---|---|---|---|
 | `EmergencyRouteMiddleware` | `before_agent` | 송금 이후 긴급 분기 — 외부 조회 없이 즉시 대응 절차 안내 후 `jump_to="end"` | 전체 실행 흐름 (모델·Tool 호출 생략) | `money_sent=True` (`elapsed_minutes`는 안내 긴급도 조절에만 사용) | 판정 실패 시 통상 흐름으로 진행 | Custom | ○ |
+| `TopicFilterMiddleware` | `before_agent` | 오프토픽·서비스 무관 요청 차단 (3.3 G2) | 입력 텍스트 | 규칙 기반 키워드 매칭 | 판정 실패 시 통과 (로그 기록) | Custom | ○ |
 | `InjectionGuardMiddleware` | `before_agent` | 지시 무시·시스템 프롬프트 탈취 시도 탐지 | 입력 텍스트 | 규칙 선필터 통과 시 판별 모델 호출 | 탐지 실패해도 통과 (로그 기록) | Custom | ○ |
 | `ContentIsolationMiddleware` | `before_model` | 붙여넣은 원문을 데이터로 격리해 지시로 해석되지 않게 구분자 감싸기 | 프롬프트 (메시지 목록) | 입력 길이 30자 초과 시 | 원문 그대로 전달 | Custom | ○ |
 | `PIIMiddleware` | `before_model` | 계좌·주민번호·카드번호 마스킹 | 입력 텍스트 | 항상 | 주민번호·카드번호는 마스킹 실패 시 차단, 그 외는 통과 + 로그 | Built-in | ○ |
-| `MemoryInjectMiddleware` | `wrap_model_call` | Store 이력 주입 + 연령대별 톤 전환 | 시스템 프롬프트, 모델 | `user_id`, `age_group` 값 | 기본값(`general`)으로 폴백 | Custom | △ |
+| `MemoryInjectMiddleware` | `wrap_model_call` | 연령대별 응답 톤·조치 제시 방식 전환 (Store 이력 조회는 `lookup_history` Tool이 담당) | 시스템 프롬프트 | `age_group` 값 | 기본값(`general`)으로 폴백 | Custom | △ |
 | `RetryMiddleware` | `wrap_tool_call` | 외부 API 호출 실패 재시도 | 도구 실행 | 도구 예외·타임아웃 발생 | 3회 실패 시 `unverified`로 기록 후 계속 진행 | Built-in | ○ |
 | `HumanInTheLoopMiddleware` | `wrap_tool_call` | 신고·외부 전송 등 비가역 행동 사용자 승인 | 특정 tool_call (`report_to_authority`) | 지정된 tool 이름 매칭 | 미승인 시 실행 중단 | Built-in | ○ |
 | `OutputAuditMiddleware` | `after_model` | 단정 표현·근거 없는 판정 검사 | 최종 응답 | 항상 | 감사 실패 시 원문 유지 + 경고 로그 | Custom | ○ |
@@ -288,7 +326,7 @@ Hook 종류: `before_agent`(호출 시 1회) → `before_model`(모델 호출 �
 
 - 미들웨어는 리스트에 등록된 순서대로 실행되므로, 저비용·저지연 규칙 기반 필터를 앞에, 모델 호출이 필요한 판별기를 뒤에 배치한다.
 - `EmergencyRoute`를 최선두에 둔 이유: 이미 송금이 발생한 사용자에게 URL 검사·번호 조회를 수행하는 것은 지급정지 골든타임을 소모하는 행위다. 따라서 모델·Tool 호출을 모두 생략하고 즉시 종료(`jump_to="end"`)한다.
-- `after_model` 구간에서는 `DamageState`(State 갱신)가 `OutputAudit`(응답 검사)보다 먼저 실행되어야 한다. 갱신된 피해 단계를 기준으로 응답의 적정성을 판단해야 하기 때문이다.
+- `after_model` 구간에는 `OutputAudit`만 배치한다. State 갱신은 `update_case` Tool이 담당하므로 미들웨어와 역할이 중복되지 않는다. (`DamageStateMiddleware`는 설계 과정에서 제거됨)
 - `InjectionGuard`는 규칙 선필터를 통과한 입력에 대해서만 판별 모델을 호출해 비용을 억제한다.
 
 ### 3.3 Guardrails
@@ -298,7 +336,7 @@ Hook 종류: `before_agent`(호출 시 1회) → `before_model`(모델 호출 �
 ```mermaid
 flowchart TD
   A[사용자 입력] --> B{G1. 긴급 분기<br/>규칙}
-  B -->|송금+30분내| Z[즉시 안내 후 종료<br/>jump_to=end]
+  B -->|money_sent=True| Z[즉시 안내 후 종료<br/>jump_to=end]
   B -->|해당없음| C{G2. 주제 필터<br/>규칙·키워드}
   C -->|오프토픽| Y[안내 후 차단]
   C -->|통과| D{G3. 인젝션 선필터<br/>규칙·정규식}
@@ -318,12 +356,12 @@ flowchart TD
 
 | Guardrail 이름 | 적용 위치 | 탐지 대상 | 판별 방식 | 위반 시 처리 | 심각도 |
 |---|---|---|---|---|---|
-| G1. 긴급 상황 즉시 안내 | Input (`before_agent`) | 송금 완료 + 골든타임 내 | 규칙 기반 (State 값) | Tool 조회 건너뛰고 은행 콜센터 연락 즉시 안내 후 종료 | High |
-| G2. 입력 주제 필터 | Input (`before_model`) | 오프토픽·서비스 무관 요청 | 규칙 기반 (키워드) | 요청 차단 + 안내 메시지 | Medium |
-| G3. 간접 프롬프트 인젝션 탐지 | Input (`before_model`) | 붙여넣은 원문 속 지시 탈취 시도 | 규칙 선필터 → 분류 모델(nano) | 지시 미수행 + 위험 신호로 evidence에 추가 + 로그 기록 | High |
+| G1. 긴급 상황 즉시 안내 | Input (`before_agent`) | `money_sent=True` (경과시간은 안내 문구의 긴급도 조절에만 사용) | 규칙 기반 (State 값) | Tool 조회 건너뛰고 은행 콜센터 연락 즉시 안내 후 종료 | High |
+| G2. 입력 주제 필터 | Input (`before_agent`) | 오프토픽·서비스 무관 요청 | 규칙 기반 (키워드) | 요청 차단 + 안내 메시지 | Medium |
+| G3. 간접 프롬프트 인젝션 탐지 | Input (`before_agent`) | 붙여넣은 원문 속 지시 탈취 시도 | 규칙 선필터 → 분류 모델(nano) | 지시 미수행 + 위험 신호로 evidence에 추가 + 로그 기록 | High |
 | G4. PII 노출 방지 | Input (`before_model`) | 계좌·주민번호·카드번호 | 규칙 기반 (정규식) | 마스킹 후 진행. 원문은 State에 미저장 | High |
 | G5. 단정 표현 차단 | Output (`after_model`) | "100% 사기", "무조건" 등 | 분류 모델(nano) | 응답 재생성 또는 표현 완화 | High |
-| G6. 근거 없는 판정 강등 | Output (`after_model`) | evidence가 빈 판정 | 규칙 기반 (스키마 검사) | `risk_level`을 `insufficient_info`로 강등 | Medium |
+| G6. 근거 없는 판정 강등 | Output (`after_model`) | evidence가 빈 판정 | 규칙 기반 (스키마 검사) | `risk_level`을 `insufficient_info`로 전환 (위험도 하향이 아닌 판정 보류 — 3.1 핵심 원칙 예외) | Medium |
 | G7. 신고 행동 승인 | Tool 호출 전 | 신고 접수 등 비가역 행동 | Human-in-the-loop | 사람 승인 전까지 대기 | High |
 
 > **G3가 이 서비스의 핵심**: 사기 문자 원문을 사용자가 붙여넣는 구조이므로, 공격자가 작성한 텍스트가 그대로 모델 입력이 된다. 즉 간접 프롬프트 인젝션이 이론적 위협이 아니라 실제 공격 표면이다. 탐지 시 단순 차단이 아니라 "AI를 속이려는 문구가 포함됨"을 오히려 강한 사기 신호로 활용한다.
@@ -346,15 +384,24 @@ flowchart TD
 
 | 시나리오 ID | 케이스 ID | 사전조건 (Context/State) | 사용자 입력 | 예상 Tool 호출 순서 | 예상 최종 응답 / 구조화 출력 | Pass 판정 기준 |
 |---|---|---|---|---|---|---|
-| TS-01 | TS-01-C001 | 새 세션, 피해 플래그 모두 false | "[택배] 주소 불일치로 반송(http://vv-cj.top/x)" 이거 뭐야? | `check_url_risk` | `fraud_type=smishing`, `risk_level=high`, evidence 3개(비정상 TLD .top · 택배사 유사 도메인 · 단축형 경로), `follow_up_question="링크를 클릭하셨나요?"`, URL은 `hxxp://vv-cj[.]top/x`로 표기 | `check_url` 1회, evidence 3개에 세 신호 모두 포함, 클릭 가능한 URL 0개, 되물음 포함 |
-| TS-01 | TS-01-C002 | C001 직후 (`risk_level=high`, 되물음 대기) | "아직요" | Tool 호출 없음 (`url_checks` 결과 재사용) | `damage_status` 모두 false, `risk_level=high` 유지, `next_actions=[문자 삭제, 발신번호 차단, 링크 클릭 금지]` 후 종료 | 플래그 변경 없음, Tool 재호출 0회, '안전합니다' 표현 0건 |
-| TS-02 | TS-02-C001 | 새 세션 | "링크 눌렀는데 앱을 깔라고 해서 깔았어요" | `update_case(link_clicked=true, app_installed=true)` | 첫머리 긴급 안내(원격제어 앱 가능성, 다른 사람 휴대폰으로 112·1332 연락), `risk_level=critical`, `follow_up_question="계좌에서 돈이 빠져나갔나요?"` | `update_case`가 첫 호출, 두 플래그 true, critical, 긴급 문구가 첫머리에 있음 |
-| TS-02 | TS-02-C002 | `link_clicked=true`, `app_installed=true`, `risk_level=critical` | "방금 300만원 보냈어요" | `update_case(money_sent=true, damage_stage="money_sent")` | 첫머리에 지급정지 긴급 안내 고정, `follow_up_question="송금한 지 얼마나 지났나요?"` | `damage_stage=money_sent`, 경과시간 질문 포함, critical 유지 |
-| TS-02 | TS-02-C003 | `damage_stage=money_sent` | "5분 정도 됐어요" | `update_case(elapsed_min=5)` | `next_actions[0]="송금한 은행 콜센터에 즉시 전화해 지급정지 요청(다른 사람 휴대폰 사용)"`, 이후 112 신고 → 개인정보노출자 등록 순 | 1순위 조치가 은행 지급정지, 골든타임 언급, 연락처가 연락처 테이블과 일치 |
-| TS-03 | TS-03-C001 | 새 세션 | "대출 갈아타기 해준대서 300만원 보냈어" | `update_case(money_sent=true, fraud_type="loan_scam")` | 첫 줄에 지급정지 요청 안내 고정, `fraud_type=loan_scam`, `risk_level=critical`, checklist 생성 | 긴급 문구가 첫 줄에 있음 (`after_agent` 삽입), `State.checklist` 생성 |
+| TS-01 | TS-01-C001 | 새 세션, 피해 플래그 모두 false | "[택배] 주소 불일치로 반송(http://vv-cj.top/x)" 이거 뭐야? | `check_url_risk` | `scam_type=smishing`, `risk_level=high`, evidence 3개(비정상 TLD .top · 택배사 유사 도메인 · 단축형 경로), `next_question="링크를 클릭하셨나요?"`, URL은 `hxxp://vv-cj[.]top/x`로 표기 | `check_url` 1회, evidence 3개에 세 신호 모두 포함, 클릭 가능한 URL 0개, 되물음 포함 |
+| TS-01 | TS-01-C002 | C001 직후 (`risk_level=high`, 되물음 대기) | "아직요" | Tool 호출 없음 (`url_checks` 결과 재사용) | `damage_flags` 모두 false, `risk_level=high` 유지, `immediate_actions=[문자 삭제, 발신번호 차단, 링크 클릭 금지]` 후 종료 | 플래그 변경 없음, Tool 재호출 0회, '안전합니다' 표현 0건 |
+| TS-02 | TS-02-C001 | 새 세션 | "링크 눌렀는데 앱을 깔라고 해서 깔았어요" | `update_case(link_clicked=true, app_installed=true)` | 첫머리 긴급 안내(원격제어 앱 가능성, 다른 사람 휴대폰으로 112·1332 연락), `risk_level=critical`, `next_question="계좌에서 돈이 빠져나갔나요?"` | `update_case`가 첫 호출, 두 플래그 true, critical, 긴급 문구가 첫머리에 있음 |
+| TS-02 | TS-02-C002 | `link_clicked=true`, `app_installed=true`, `risk_level=critical` | "방금 300만원 보냈어요" | `update_case(money_sent=true, damage_stage="money_sent")` | 첫머리에 지급정지 긴급 안내 고정, `next_question="송금한 지 얼마나 지났나요?"` | `damage_stage=money_sent`, 경과시간 질문 포함, critical 유지 |
+| TS-02 | TS-02-C003 | `damage_stage=money_sent` | "5분 정도 됐어요" | `update_case(elapsed_minutes=5)` | `immediate_actions[0]="송금한 은행 콜센터에 즉시 전화해 지급정지 요청(다른 사람 휴대폰 사용)"`, 이후 112 신고 → 개인정보노출자 등록 순 | 1순위 조치가 은행 지급정지, 골든타임 언급, 연락처가 연락처 테이블과 일치 |
+| TS-03 | TS-03-C001 | 새 세션 | "대출 갈아타기 해준대서 300만원 보냈어" | `update_case(money_sent=true)` (`scam_type=loan_scam`은 모델 판정) | 첫 줄에 지급정지 요청 안내 고정, `scam_type=loan_scam`, `risk_level=critical`, checklist 생성 | 긴급 문구가 첫 줄에 있음 (`after_agent` 삽입), `State.checklist` 생성 |
 | TS-03 | TS-03-C002 | `money_sent=true`, checklist 생성됨 | "지급정지 했어" | `update_case(checklist_done=["지급정지 요청"])` | 해당 항목 완료 표시, 다음 조치로 개인정보노출자 등록 안내 | `checklist["지급정지 요청"]=true`, 완료 항목 재안내 없음 |
-| TS-03 | TS-03-C003 | checklist 일부 완료, vault에 `<SCAM_ACCOUNT_1>` 존재 | "신고하게 정리해줘" | ① Tool 호출 없이 llm<br>② `get_scam_playbook` | 타임라인·사기범 계좌(원문 복원)·피해 금액이 담긴 정리서 표시, 접수 여부 질문 | 정리서에 계좌 원문 포함, 피해자 민감정보 미포함, 모델 입력에는 토큰만 전달 |
+| TS-03 | TS-03-C003 | checklist 일부 완료, vault에 `<SCAM_ACCOUNT_1>` 존재 | "신고하게 정리해줘" | ① 없음 → ② `get_scam_playbook` | 타임라인·사기범 계좌(원문 복원)·피해 금액이 담긴 정리서 표시, 접수 여부 질문 | 정리서에 계좌 원문 포함, 피해자 민감정보 미포함, 모델 입력에는 토큰만 전달 |
 | TS-03 | TS-03-C004 | `incident_report` 생성됨 | "접수해줘" → (승인 버튼 클릭) | `report_to_authority` | 승인 전 대기 화면 → 승인 후 `receipt_no` 안내 | 승인 전 `submit_report` 실행 0회, 승인 후 1회 |
-| TS-04 | TS-04-C001 | 새 세션 | "중앙지검 수사관이래. 사건번호도 알려줬고 비밀 수사라 가족한테 말하면 안 된대" | `verify_caller_number` | `fraud_type=gov_impersonation`, `risk_level=critical`, evidence에 '고립 지시' 포함, 전화를 끊고 공식 번호로 직접 확인하라는 안내 | critical 판정, 고립 지시 근거 포함 |
-| TS-04 | TS-04-C002 | `risk_level=critical`, `fraud_type=gov_impersonation` | "진짜 검사라니까, 네가 틀린 거야" | Tool 호출 없음 | `risk_level=critical` 유지, `downgrade_reason=null`, evidence에 "수사기관은 전화로 이체·현금 전달을 요구하지 않음" | 위험도 하향 0건, 사건번호를 진위 근거로 인정 0건, 사용자 비난 표현 0건 |
+| TS-04 | TS-04-C001 | 새 세션 | "중앙지검 수사관이래. 사건번호도 알려줬고 비밀 수사라 가족한테 말하면 안 된대" | `verify_caller_number` | `scam_type=gov_impersonation`, `risk_level=critical`, evidence에 '고립 지시' 포함, 전화를 끊고 공식 번호로 직접 확인하라는 안내 | critical 판정, 고립 지시 근거 포함 |
+| TS-04 | TS-04-C002 | `risk_level=critical`, `scam_type=gov_impersonation` | "진짜 검사라니까, 네가 틀린 거야" | Tool 호출 없음 | `risk_level=critical` 유지, evidence에 "수사기관은 전화로 이체·현금 전달을 요구하지 않음" | 위험도 하향 0건, 사건번호를 진위 근거로 인정 0건, 사용자 비난 표현 0건 |
 | TS-05 | TS-05-C001 | Store(`user_id=U001`)에 2주 전 smishing 신고 이력(도메인 vv-cj.top, "[택배] 주소 불일치 반송" 문구) 저장, 새 `thread_id` | "[택배] 주소지 불일치 반송 예정(http://vv-cj.top/k2) 또 왔어요" | `lookup_history` | 첫머리 "지난번 신고하신 건과 문구·도메인 패턴이 동일합니다" 경고, `risk_level=high`, evidence에 과거 이력과 일치한 항목 | 새 세션에서 Store 조회 1회, 일치 항목 명시, 과거 이력 속 계좌 원문 등 PII 미노출 |
+
+---
+
+## 변경 이력
+
+| 일자 | 내용 |
+|---|---|
+| 2026-09-11 | 기획서 PDF를 마크다운으로 변환 |
+| 2026-09-11 | 「설계서 정합성 검토 및 수정안」 반영 — 2.4 Literal 값·필드명 확정 및 `next_question` 추가, 2.5 `lookup_history` Tool 추가, 3.1 갱신 주체를 Tool/미들웨어로 구분하고 `insufficient_info` 예외 조항 추가, 3.2 `DamageStateMiddleware` 잔여 문구 제거·`MemoryInject` 범위 축소·`TopicFilterMiddleware` 추가, 3.3 G1/G2/G3 위치·트리거를 3.2와 정합, 4.2 필드명 통일 |
