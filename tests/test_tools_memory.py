@@ -10,6 +10,8 @@ import urllib.error
 
 import guards
 from langchain.tools import ToolRuntime
+from pydantic import TypeAdapter, ValidationError
+from schemas import URLRiskResult
 from langgraph.store.memory import InMemoryStore
 
 import memory
@@ -104,6 +106,59 @@ class CheckUrlRiskTests(unittest.TestCase):
     def test_risk_score_never_exceeds_100(self):
         result = tools.analyze_url("http://vv-cj.top/x@evil")
         self.assertLessEqual(result["risk_score"], 100)
+
+
+class URLStatusTests(unittest.TestCase):
+    """설계서 5절 URLStatus. 점수로는 "판단 불가"를 표현할 수 없어 도입된 필드다."""
+
+    def test_status_is_resolved_by_documented_priority(self):
+        for url, expected in (
+            ("이게 뭐야", "malformed"),
+            ("http://vv-cj.top/x", "confirmed"),
+            ("http://kakao.com.evil.ru/login", "suspicious"),
+            ("http://203.0.113.9/kb/login", "suspicious"),
+            ("https://bit.ly/3xK9p", "unverifiable"),
+            ("https://www.naver.com", "clean"),
+            ("https://www.cjlogistics.com", "clean"),
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(tools.analyze_url(url)["status"], expected)
+
+    def test_return_value_satisfies_shared_contract(self):
+        """필수 키 status가 항상 채워진다. 생산자의 타입 계약이다."""
+        adapter = TypeAdapter(URLRiskResult)
+        for url in ("이게 뭐야", "http://vv-cj.top/x", "https://bit.ly/3xK9p",
+                    "https://www.naver.com", "http://a.com@evil.ru/x"):
+            with self.subTest(url=url):
+                adapter.validate_python(tools.analyze_url(url))
+
+    def test_clean_and_unverifiable_share_zero_score_but_differ_in_status(self):
+        """이 구분이 status를 도입한 이유다. 점수만으로는 둘을 나눌 수 없다."""
+        clean = tools.analyze_url("https://www.naver.com")
+        unverifiable = tools.analyze_url("https://bit.ly/3xK9p")
+        self.assertEqual(clean["risk_score"], unverifiable["risk_score"], 0)
+        self.assertNotEqual(clean["status"], unverifiable["status"])
+        self.assertIn("확인 불가", " ".join(unverifiable["signals"]))
+
+    def test_shortener_no_longer_adds_score(self):
+        """단축 URL은 위험이 아니라 판단 보류다. 점수를 올리지 않는다."""
+        self.assertEqual(tools.analyze_url("https://bit.ly/3xK9p")["risk_score"], 0)
+        self.assertNotIn("shortener", tools._CUMULATIVE_SCORES)
+
+    def test_detected_risk_outranks_unverifiable(self):
+        """단축 URL이어도 다른 신호가 있으면 suspicious가 이긴다."""
+        result = tools.analyze_url("http://bit.ly/x")
+        self.assertEqual(result["status"], "suspicious")
+        self.assertGreater(result["risk_score"], 0)
+
+    def test_missing_status_is_not_treated_as_clean(self):
+        """설계서: 누락을 clean으로 기본 처리하지 않는다.
+
+        생산자가 status를 빠뜨리면 계약 검증에서 걸려야 한다.
+        """
+        legacy = {"blacklisted": False, "risk_score": 0, "signals": []}
+        with self.assertRaises(ValidationError):
+            TypeAdapter(URLRiskResult).validate_python(legacy)
 
 
 class VerifyCallerNumberTests(unittest.TestCase):
