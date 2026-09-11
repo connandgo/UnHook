@@ -61,13 +61,11 @@ FastAPI 같은 비동기 서버에서는 `await unhook.ainvoke(turn)`을 사용�
 
 ## 터미널에서 직접 대화하기
 
-프로젝트 루트에서 기존 가상환경과 API 키를 사용한다.
+프로젝트 루트에서 위 가상환경과 API 키를 사용한다.
 
 ```bash
-cd /Users/minseojang/skala-agent/UnHook
-source /Users/minseojang/Documents/ChatGPT/langchain/.venv-unhook/bin/activate
+source .venv/bin/activate
 export OPENAI_API_KEY="본인의_API_키"
-PYTHONPATH=/Users/minseojang/skala-agent/UnHook \
 python -m agent.cli
 ```
 

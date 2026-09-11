@@ -16,7 +16,7 @@
 |---|---|
 | 무엇이든 시작 전 | 1.1 Agent 정의, 1.5 제약 및 고려 사항 |
 | 전체 흐름 파악 | 2.1 전체 구조도, 2.2 동작 흐름 |
-| LLM 호출·모델 선택 | 2.3 LLM 모델 설계 (gpt-5-nano 기본, gpt-5 승격 조건) |
+| LLM 호출·모델 선택 | 2.3 LLM 모델 설계 (gpt-5-nano 기본, 재검토 프로필 전환 조건) |
 | 출력 스키마 | 2.4 Structured Output 설계 (`ScamAssessment`) |
 | Tool 추가·수정 | 2.5 Tool 설계 (docstring은 설계서 문장을 그대로 사용) |
 | State·Context 필드 | 3.1 Context |
@@ -42,14 +42,20 @@ docs/agent-design.md   AI Agent 설계서 (단일 기준 문서)
 docs/images/           설계서 첨부 이미지
 schemas.py             출력 스키마, 공통 Literal, Tool 결과 타입
 state.py               AgentState, Runtime Context, 새 대화 초기값
-config.py              공통 모델명 및 승격 기준
+config.py              공통 모델명 및 재검토 기준
+agent/                 Agent 조립, 모델, 프롬프트, CLI (①)
+middleware.py          피해 상태, 긴급 분기, 이력 주입, 조립·Checkpointer·Store (②)
 guards.py              입력 준비, 주제 필터, 인젝션 탐지, 원문 격리 (③)
+pii.py, audit.py       개인정보 마스킹, 출력 검증 (④)
+tools.py, memory.py    URL·번호 조회, 신고 Tool, 이력 메모리 (⑤)
+rag.py, data/          대응 절차 RAG 및 데이터 (⑥)
+app.py                 Streamlit 시연 화면 (통합)
 .env.example           환경변수 이름 예시
 requirements.txt       공통 코드 의존성
-tests/                 공통 계약 및 입력 보안 검증
+tests/, agent/tests/   공통 계약·보안·PII·Tool·RAG 및 Agent Core 검증
 ```
 
-예정된 구현 파일과 공유 계약은 설계서 5절을 참조한다.
+파일별 책임과 공유 계약은 설계서 5절을 참조한다. 전체 파일 트리는 README를 참조한다.
 
 ## 입력 보안 연결
 
