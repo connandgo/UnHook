@@ -33,12 +33,8 @@ STAGE_ORDER: dict[DamageStage, int] = {
     "none": 0, "link_clicked": 1, "info_exposed": 2, "app_installed": 3, "money_sent": 4,
 }
 
-# Floor only: the confirmed damage stage cannot imply less risk than this.
-# The model supplies the situational judgement on top (TS-04-C001 reaches
-# critical with no tool call and no damage stage).
-# TODO(강준모 확정): 설계서 3.1에 표로 올릴 것. money_sent는 TS-02-C002·TS-03-C001,
-# app_installed는 TS-02-C001("Tool 호출 0회"이므로 조회 근거 없이 critical)로 값이
-# 강제되고, link_clicked·info_exposed는 테스트 근거가 없는 제안값이다.
+# 하한만 정한다. 상황 판단은 모델이 얹는다 — TS-04-C001은 Tool 호출 0회에
+# damage_stage=none인데도 critical이다. 값의 근거는 설계서 2.5 STAGE_RISK_FLOOR 표.
 STAGE_RISK_FLOOR: dict[DamageStage, RiskLevel] = {
     "none": "insufficient_info",
     "link_clicked": "medium",
@@ -203,6 +199,8 @@ MAX_ACTIONS = 5
 
 # 4.2 TS-02-C003이 immediate_actions[0]으로 기대하는 문구.
 PAYMENT_STOP_ACTION = "송금한 은행 콜센터에 즉시 전화해 지급정지 요청(다른 사람 휴대폰 사용)"
+# data/contacts.json의 bank_callcenter label. 연락처 테이블 밖의 값을 쓰지 않는다 (4.2).
+BANK_CALLCENTER_LABEL = "송금한 은행 콜센터"
 
 # 완료형 표현만 본다. "송금하면 안 되나요?" 같은 질문까지 긴급으로 보면
 # 평범한 턴의 조회 Tool이 꺼져 TS-01이 깨진다.
@@ -287,7 +285,7 @@ def emergency_route_notice(state: UnHookState, runtime) -> dict | None:
     first = ActionStep(
         priority=1,
         action=build_payment_stop_action(state.get("elapsed_minutes")),
-        contact=None,  # TODO: data/contacts.json 확정 후 은행 콜센터 안내 연결
+        contact=BANK_CALLCENTER_LABEL,
     )
     renumbered = [first] + [
         action.model_copy(update={"priority": index})
