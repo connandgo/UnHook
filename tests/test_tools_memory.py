@@ -1,0 +1,224 @@
+"""작업 묶음 5 (tools.py, memory.py) 검증.
+
+설계서 4.2의 TS-01·TS-05 기대값과 2.5의 에러 처리 규약을 확인한다.
+외부 API와 Store는 주입·InMemoryStore로 대체해 네트워크 없이 돌아간다.
+"""
+
+import unittest
+import urllib.error
+
+from langchain.tools import ToolRuntime
+from langgraph.store.memory import InMemoryStore
+
+import memory
+import tools
+from state import RuntimeContext
+
+
+def make_runtime(user_id="U001", store=None):
+    """Tool에 주입되는 ToolRuntime을 테스트용으로 만든다."""
+    return ToolRuntime(
+        state={}, context=RuntimeContext(user_id=user_id) if user_id else None,
+        config={}, stream_writer=None, tool_call_id="test-call", store=store,
+    )
+
+
+class CheckUrlRiskTests(unittest.TestCase):
+    def test_ts01_smishing_url_reports_three_signals(self):
+        """4.2 TS-01-C001: 비정상 TLD·유사 도메인·단축형 경로 세 신호."""
+        result = tools.analyze_url("http://vv-cj.top/x")
+        joined = " ".join(result["signals"])
+        self.assertIn("비정상 TLD .top", joined)
+        self.assertIn("유사 도메인", joined)
+        self.assertIn("단축형 경로", joined)
+        self.assertTrue(result["blacklisted"])
+        self.assertGreaterEqual(result["risk_score"], 50)
+
+    def test_malformed_url_returns_zero_without_raising(self):
+        """2.5: 형식 불명 URL이면 risk_score=0, signals=["형식 불명"] (예외 미발생)."""
+        for bad in ("", "   ", "이게 뭐야", "http://", "https:///path"):
+            with self.subTest(url=bad):
+                result = tools.analyze_url(bad)
+                self.assertEqual(result["risk_score"], 0)
+                self.assertEqual(result["signals"], ["형식 불명"])
+                self.assertFalse(result["blacklisted"])
+
+    def test_ip_host_and_shortener_are_flagged(self):
+        ip_result = tools.analyze_url("http://192.168.10.24/login")
+        self.assertIn("IP 주소를 직접 사용", " ".join(ip_result["signals"]))
+
+        short_result = tools.analyze_url("https://bit.ly/3abcd")
+        self.assertIn("단축 URL", " ".join(short_result["signals"]))
+
+    def test_ordinary_domain_has_no_false_alarm(self):
+        result = tools.analyze_url("https://www.naver.com/news/article/123")
+        self.assertFalse(result["blacklisted"])
+        self.assertEqual(result["risk_score"], 0)
+        self.assertEqual(result["signals"], ["알려진 위험 신호 없음"])
+
+    def test_risk_score_never_exceeds_100(self):
+        result = tools.analyze_url("http://vv-cj.top/x@evil")
+        self.assertLessEqual(result["risk_score"], 100)
+
+
+class VerifyCallerNumberTests(unittest.TestCase):
+    @staticmethod
+    def _companies(*_args):
+        return [
+            {"kor_co_nm": "국민은행", "cal_tel": "1588-9999"},
+            {"kor_co_nm": "신한은행", "cal_tel": "1577-8000"},
+        ]
+
+    def test_official_number_matches(self):
+        result = tools.verify_number("1588-9999", "국민은행", fetch=self._companies)
+        self.assertIs(result["is_official"], True)
+        self.assertEqual(result["company"], "국민은행")
+        self.assertIn("15889999", result["official_numbers"])
+
+    def test_unlisted_number_is_not_official(self):
+        result = tools.verify_number("010-1234-5678", "국민은행", fetch=self._companies)
+        self.assertIs(result["is_official"], False)
+
+    def test_lookup_failure_yields_none_after_three_attempts(self):
+        """2.5: 타임아웃 3회 재시도 후 is_official=None → unverified 기록."""
+        attempts = []
+
+        def failing(*_args):
+            attempts.append(1)
+            raise urllib.error.URLError("timeout")
+
+        result = tools.verify_number("1588-9999", "국민은행", fetch=failing)
+        self.assertIsNone(result["is_official"])
+        self.assertEqual(result["official_numbers"], [])
+        self.assertEqual(len(attempts), tools.FINLIFE_MAX_ATTEMPTS)
+
+
+class MemoryMatchTests(unittest.TestCase):
+    def setUp(self):
+        self.store = InMemoryStore()
+        self.past_text = "[택배] 주소 불일치로 반송 http://vv-cj.top/x 010-1111-2222"
+        record = memory.build_record(
+            "택배 사칭 스미싱 문자 신고",
+            source_text=self.past_text,
+            scam_type="smishing",
+            reported=True,
+        )
+        memory.save_report(self.store, "U001", record)
+
+    def test_ts05_same_domain_and_phrase_match(self):
+        """4.2 TS-05-C001: 2주 뒤 다른 경로로 와도 도메인·문구가 일치."""
+        history = memory.load_history(self.store, "U001")
+        matches = memory.match_history(
+            history, "[택배] 주소지 불일치 반송 예정(http://vv-cj.top/k2) 또 왔어요"
+        )
+        fields = {m["field"] for m in matches}
+        self.assertIn("domain", fields)
+        self.assertIn("phrase", fields)
+        self.assertTrue(all(m["reported"] for m in matches))
+
+    def test_unrelated_input_has_no_match(self):
+        history = memory.load_history(self.store, "U001")
+        self.assertEqual(memory.match_history(history, "오늘 점심 뭐 먹지"), [])
+
+    def test_history_is_isolated_per_user(self):
+        self.assertEqual(memory.load_history(self.store, "U002"), [])
+
+    def test_record_keeps_no_pii_original(self):
+        """3.1: 원문은 보관하지 않고 정규화된 값만 저장한다."""
+        _, record = memory.load_history(self.store, "U001")[0]
+        self.assertNotIn(self.past_text, str(record))
+        self.assertEqual(record["domains"], ["vv-cj.top"])
+        # 1.5 보안: 전화번호는 해시로만 저장하고 숫자 원문은 어디에도 남지 않는다.
+        self.assertEqual(record["phones"], [memory.hash_identifier("01011112222")])
+        self.assertNotIn("01011112222", str(record))
+        self.assertNotIn("1111", record["phrase"])
+
+    def test_prompt_block_masks_phone_number(self):
+        history = memory.load_history(self.store, "U001")
+        matches = memory.match_history(history, "010-1111-2222 에서 또 전화 왔어")
+        block = memory.summarize_for_prompt(matches)
+        self.assertIn("2222", block)
+        self.assertNotIn("01011112222", block)
+
+    def test_history_keeps_only_five_records(self):
+        """3.1: report_history는 최근 5건."""
+        for index in range(7):
+            memory.save_report(
+                self.store, "U002",
+                memory.build_record(f"사건 {index}", source_text=f"case{index}.top"),
+            )
+        self.assertEqual(len(memory.load_history(self.store, "U002")),
+                         memory.MAX_HISTORY_RECORDS)
+
+    def test_empty_prompt_block_when_no_match(self):
+        self.assertEqual(memory.summarize_for_prompt([]), "")
+
+
+class ReportToAuthorityTests(unittest.TestCase):
+    """4.2 TS-03-C004. 승인 자체는 HumanInTheLoopMiddleware(작업 묶음 2)가 담당하므로,
+    여기서는 승인 이후 동작만 확인한다."""
+
+    def test_accepted_report_is_saved_to_store_with_receipt(self):
+        store = InMemoryStore()
+        result = tools.report_to_authority.func(
+            "smishing", "http://vv-cj.top/x", "택배 사칭 문자 신고",
+            make_runtime("U001", store),
+        )
+        self.assertIs(result, True)
+        history = memory.load_history(store, "U001")
+        self.assertEqual(len(history), 1)
+        _, record = history[0]
+        self.assertTrue(record["reported"])
+        self.assertTrue(record["receipt_no"].startswith("UH-SMI-"))
+
+    def test_missing_user_id_raises_instead_of_guessing(self):
+        """2.1: 모델이 임의로 다른 사용자의 ID를 선택하지 못하게 한다."""
+        with self.assertRaises(ValueError):
+            tools.report_to_authority.func(
+                "smishing", "target", "summary", make_runtime(None, InMemoryStore())
+            )
+
+    def test_receipt_numbers_are_unique(self):
+        first = tools.make_receipt_no("loan_scam")
+        second = tools.make_receipt_no("loan_scam")
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.startswith("UH-LOA-"))
+
+
+class ToolWiringTests(unittest.TestCase):
+    def test_design_tool_set_is_registered(self):
+        """2.5: Tool은 4종 (lookup_history는 제거됨)."""
+        names = [t.name for t in tools.ALL_TOOLS]
+        self.assertEqual(names, [
+            "check_url_risk", "verify_caller_number",
+            "get_scam_playbook", "report_to_authority",
+        ])
+
+    def test_docstrings_match_design_sentences(self):
+        """AGENTS.md: docstring은 설계서 문장을 그대로 사용한다."""
+        self.assertEqual(
+            tools.check_url_risk.description,
+            "문자에 포함된 URL이 알려진 피싱 사이트인지 확인하고, 단축 URL·유사 도메인·"
+            "IP 직접 주소·비정상 TLD 등 위험 신호를 검사합니다.",
+        )
+        self.assertEqual(
+            tools.verify_caller_number.description,
+            "걸려온 전화번호가 해당 금융회사의 공식 대표번호인지 대조합니다. "
+            "기관 사칭 판별에 사용합니다.",
+        )
+
+    def test_emergency_route_disables_only_lookup_tools(self):
+        """3.2: 송금 턴에 비활성화되는 것은 조회형 Tool 2종뿐."""
+        self.assertEqual(tools.LOOKUP_TOOL_NAMES,
+                         ["check_url_risk", "verify_caller_number"])
+
+    def test_playbook_returns_empty_until_rag_module_exists(self):
+        """1.5 안정성: rag.py가 없으면 추측 대신 빈 결과."""
+        result = tools.get_scam_playbook.invoke(
+            {"scam_type": "smishing", "damage_stage": "money_sent"}
+        )
+        self.assertEqual(result, {"steps": [], "contacts": []})
+
+
+if __name__ == "__main__":
+    unittest.main()
