@@ -375,17 +375,11 @@ def contact_labels() -> tuple[str, ...]:
     return tuple(a["label"] for a in data.get("agencies", []) if a.get("label"))
 
 
-def build_middleware(
-    *,
-    classifier=None,
-    allowed_contacts=None,
-    external_splitter=None,
-) -> list:
+def build_middleware(*, classifier=None, allowed_contacts=None) -> list:
     """Agent에 넘길 미들웨어를 실행 순서가 맞게 배치해 돌려준다.
 
     classifier: 인젝션 판별 Runnable. None이면 guards.py 기본값(nano).
     allowed_contacts: 출력 감사가 허용할 연락처. None이면 data/contacts.json의 label.
-    external_splitter: 원문 구간 판별 함수. PII가 사기범 측 정보를 가릴 때 쓴다.
     """
     from audit import OutputAuditMiddleware
     from guards import (
@@ -408,17 +402,18 @@ def build_middleware(
     return [
         # 1. 마스킹이 가장 먼저. 인젝션 판별 모델·로그·Checkpointer 모두
         #    가려진 텍스트만 보게 한다 (설계서 2.1 "보조 모델에도 마스킹된 텍스트만").
-        PIIMiddleware(external_splitter=external_splitter),
+        PIIMiddleware(),
 
-        # 2. after_agent 전용. 역순 실행이므로 InjectionGuard보다 목록 앞에 둬야
-        #    보안 결과 보강 뒤에 지급정지 안내가 붙는다 (설계서 608줄).
-        emergency_route_notice,
-
-        # 3. after_model 전용. 역순 실행이므로 DamageState보다 목록 앞에 둬야
-        #    갱신된 피해 단계를 기준으로 응답을 검사한다 (설계서 3.2 실행 순서 근거).
+        # 2. 최종 검사. after_* 는 역순이라 목록 맨 앞이 곧 가장 마지막 실행이다.
+        #    after_model은 DamageState 뒤에, after_agent는 보안 보강·긴급 안내가
+        #    모두 반영된 뒤에 돈다 (설계서 608줄).
         OutputAuditMiddleware(
             allowed_contacts=contact_labels() if allowed_contacts is None else allowed_contacts
         ),
+
+        # 3. after_agent 전용. InjectionGuard 뒤, 최종 검사 앞에 와야 하므로
+        #    목록에서는 그 둘 사이에 둔다.
+        emergency_route_notice,
 
         # 4~5. 입력 가드. 마스킹 뒤에 온다.
         topic_filter,

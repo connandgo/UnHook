@@ -101,8 +101,8 @@ def run_guarded_turn(agent, config, user_statement, mask_text, external_texts=No
 |---|---|
 | ① Agent | 공통 State·응답 스키마 연결, 입력 준비 후 invoke/ainvoke. 최종 `structured_response` 사용 |
 | ② Middleware | 긴급 분기·최종 감사·보안 보강의 실제 hook 순서 조립. 후속 턴에 State 초기화 금지. 승인 재개는 기존 체크포인트 사용 |
-| ④ 개인정보 | 모델·체크포인트보다 앞에서 호출할 `mask_text(text) -> str` 제공. 토큰화·vault 관리는 별도 연결 |
-| ④ 응답 검증 | 입력 보안의 `after_agent` 보강 이후 최종 구조화 출력도 검사. 원시 AIMessage/스트림을 최종 출력으로 노출하지 않음 |
+| ④ 개인정보 | 구현: `pii.prepare_masked_input()`(출처별 마스킹 + 준비 함수 호출 + vault 반환), 문자열 어댑터 `pii.make_guard_masker(vault)` |
+| ④ 응답 검증 | 구현: `OutputAuditMiddleware.after_agent`가 보강 이후 최종 구조화 출력 검사 (보안 미들웨어보다 앞에 등록). 원시 AIMessage/스트림을 최종 출력으로 노출하지 않음 |
 | ⑤ Tool·⑥ RAG | 반환 데이터의 개인정보 제거. Tool 결과는 호출 시 불신 데이터로 감싸며 `tool_call_id` 유지 |
 | 통합 | 준비 함수 오류 처리, 사용자 진술/외부 원문 입력 구분, 체크포인트·승인·감사 통합 테스트 |
 
@@ -110,13 +110,9 @@ def run_guarded_turn(agent, config, user_statement, mask_text, external_texts=No
 ContentIsolation을 메시지를 추가하는 wrapper보다 안쪽에 둔다. 단순히 전체 리스트 끝에
 출력 감사를 붙이면 의도한 실행 순서가 되지 않는다. 요약 미들웨어도 입력 출처와 마스킹을 유지해야 한다.
 현재 구현은 ①·②·④의 완성 코드를 대신하지 않는다.
-최신 main의 `pii.mask_text`는 문자열이 아닌 `MaskResult`를 반환한다. 그대로 이 준비 함수에
-전달하면 타입 검증에서 거부된다. 통합 시 `blocked`를 확인하고 `.text`를 반환하는 어댑터가 필요하며,
-반환된 `.vault`는 원문 출처 구분과 함께 별도로 State에 연결해야 한다. `.text`만 꺼내고 vault를 버리면 안 된다.
-현재 `OutputAuditMiddleware`의 `after_model` 검사만으로는 보안 `after_agent` 보강 이후의
-최종 검사를 대신할 수 없다. 이 두 연결 작업은 이번 PR에서 완료한 것으로 간주하지 않는다.
-④의 마스킹 연결 시 URL에 인코딩된 개인정보도 처리해야 한다. 입력 보안의 URL 디코딩은
-공격 문구 검사 용도이며 개인정보 탐지·마스킹을 대신하지 않는다.
+`pii.mask_text`는 `MaskResult`를 반환하므로 준비 함수에는 `pii.prepare_masked_input()` 또는
+`pii.make_guard_masker(vault)`를 사용한다. 반환된 vault는 invoke 입력의 `pii_vault`로 함께 넘기고 버리지 않는다.
+④의 마스킹은 URL 퍼센트 인코딩 번호도 처리한다. 입력 보안의 URL 디코딩은 공격 문구 검사 용도로 별개다.
 
 ### 검증 및 공유
 
