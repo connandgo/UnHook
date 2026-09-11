@@ -12,6 +12,12 @@
 
 스키마 자체가 깨진 결과는 build_safe_fallback()으로 만든 안전 응답으로 바꾼다 (2.2 8단계).
 의미 규칙 위반은 고칠 수 있는 만큼 고치고, 고칠 수 없으면 원문 유지 + 경고 로그 (3.2).
+
+검사 시점 (5.1)
+- after_model: 모델이 최종 판단을 낸 직후. AI 메시지와 structured_response를 함께 고친다.
+- after_agent: 입력 보안의 after_agent 보강(injection_detected·근거 추가) 등 다른 미들웨어가 바꾼
+  최종 structured_response를 한 번 더 검사한다. TopicFilter처럼 모델 없이 끝난 턴도 여기서 검사된다.
+  after_* 훅은 등록 역순으로 실행되므로 이 미들웨어는 입력 보안·DamageState·EmergencyRoute보다 앞에 등록한다.
 """
 from __future__ import annotations
 
@@ -348,7 +354,7 @@ class OutputAuditMiddleware(AgentMiddleware[UnHookState, RuntimeContext]):
         update_fields: dict[str, Any] = {"response_metadata": {**(last.response_metadata or {}), "unhook_audit": result.summary()}}
         if text is not None and result.text != text:
             update_fields["content"] = result.text
-        replaced: list[Any] = [last.model_copy(update=update_fields)]
+        replaced: list[Any] = [last.model_copy(update=update_fields)]  # 표시용 AI 메시지도 맞춰 둔다
         update: dict[str, Any] = {"messages": replaced}
         if result.changed:
             update["structured_response"] = result.assessment
@@ -357,6 +363,22 @@ class OutputAuditMiddleware(AgentMiddleware[UnHookState, RuntimeContext]):
                 replaced.append(tool_message.model_copy(
                     update={"content": f"Returning structured response: {result.assessment}"}))
         return update
+
+    def after_agent(self, state: UnHookState, runtime) -> dict[str, Any] | None:
+        """최종 structured_response 검사. UI는 이 값을 사용한다 (5.1)."""
+        raw = state.get("structured_response")
+        if raw is None:
+            return None
+        assessment, errors = validate_payload(raw)
+        if assessment is None:
+            logger.warning("최종 구조화 출력 검증 실패 → 안전 응답으로 전환: %s", errors)
+            return {"structured_response": build_safe_fallback(state)}
+        # 분류기는 after_model에서 이미 호출했으므로 여기서는 규칙 검사만 한다 (모델 호출 중복 방지)
+        result = audit_assessment(assessment, text=None, state=state, allowed_contacts=self.allowed_contacts)
+        if not result.changed:
+            return None
+        logger.info("최종 출력 감사 수정: %s", [i.code for i in result.issues])
+        return {"structured_response": result.assessment}
 
 
 __all__ = [

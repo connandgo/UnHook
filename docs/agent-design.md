@@ -55,7 +55,7 @@ Un Hook는 사용자가 보이스피싱, 스미싱, 메신저 피싱 등 금융�
 | FR-05 | 피해 단계별 대응 안내 | 현재 피해 상태와 위험 수준을 바탕으로 추가 피해 방지 및 필요한 대응 행동을 우선순위에 따라 안내 |
 | FR-06 | 추가 질문 생성 | 적절한 대응을 결정하기 위한 정보가 부족한 경우 Agent가 필요한 정보를 판단하여 한 번에 하나씩 추가 질문 |
 | FR-07 | 판단 근거 및 상황 요약 | 위험 판단에 사용된 근거와 확인된 사실·미확인 정보를 구분하고, 현재 피해 상태와 우선 대응 행동을 구조화하여 제공 |
-| FR-08 | 신고 이력 기반 위험정보 조회 | 사용자들이 신고한 의심 전화번호·계좌번호 등의 이력을 저장하고, 이후 동일 정보가 입력될 경우 과거 신고 이력을 조회하여 추가 위험 신호로 활용 |
+| FR-08 | 신고 이력 기반 위험정보 조회 | 사용자 본인이 과거에 신고한 의심 전화번호·계좌번호·도메인·문구 이력을 `user_id`별로 저장하고, 이후 동일 정보가 입력될 경우 과거 신고 이력을 조회하여 추가 위험 신호로 활용. 다른 사용자 간 신고 이력 조회는 이번 범위에서 제외 |
 
 ### 1.3 사용자 시나리오
 
@@ -336,7 +336,7 @@ class ActionStep(BaseModel):
 | `incident_report` | State | `dict \| None` | 모델 생성 | 사용자가 정리서 요청 시 | 모델 (생성), `report_to_authority` (`summary` 입력) | 타임라인·사기범 계좌(토큰)·피해 금액을 담은 신고용 정리서 | ○ |
 | `history_matches` | State | `list[dict]` | `report_history`와 이번 입력의 도메인·번호·문구 대조 결과 | 새 세션 첫 턴 또는 입력에 문구·도메인·번호가 있을 때 | `MemoryInjectMiddleware` (`before_agent` 쓰기, `wrap_model_call` 읽기) | 일치 항목을 시스템 프롬프트에 주입해 반복 피해 경고·evidence 근거로 사용. 마스킹된 요약만 담고 PII 원문은 포함하지 않음 | △ |
 | `input_guard` | State (요청별) | `InputGuardResult \| None` | 규칙 선필터와 구조화 판별 결과 | 새 사용자 메시지마다 갱신 | `TopicFilterMiddleware`, `InjectionGuardMiddleware` | 메시지 ID·판별 상태·고정 사유 코드만 저장. 초기값 None, 상세 계약은 5.1 | ○ |
-| `report_history` | Store (장기) | `list[dict]` (최근 5건) | 과거 세션 누적 | 세션 간 영속 | `MemoryInjectMiddleware` (`before_agent`, 읽기) | 재접근 시 반복 피해 경고 | △ |
+| `report_history` | Store (장기) | `list[dict]` (최근 5건) | 과거 세션 누적 (`user_id`별 본인 이력만, 사용자 간 조회 없음) | 세션 간 영속 | `MemoryInjectMiddleware` (`before_agent`, 읽기) | 재접근 시 반복 피해 경고 | △ |
 
 #### 핵심 원칙
 
@@ -358,12 +358,12 @@ Hook 종류: `before_agent`(호출 시 1회) → `before_model`(모델 호출 �
 | `TopicFilterMiddleware` | `before_agent` | 명확한 무관 요청에 범위 안내, 정상 후속 답변 보존 (3.3 G2) | 마스킹된 입력, 이전 질문, State | 문맥 및 규칙 검사 | 불확실한 요청은 계속 처리 | Custom | ○ |
 | `InjectionGuardMiddleware` | `before_agent` + `after_agent` | 규칙으로 의심 입력을 선별하고 판별 모델 호출, 최종 구조화 출력에 탐지 결과 반영 | `input_guard`, `structured_response` | 의심 패턴이 있을 때만 판별 모델 호출 | `unavailable`로 기록, 상담 및 원문 격리 유지. 오류 원문은 로깅하지 않음 | Custom | ○ |
 | `ContentIsolationMiddleware` | `wrap_model_call` | 원문·진술의 구조화 경계를 유지하고 고정 보안 지시 추가 | 모델에 전달할 메시지 사본 | 매 모델 호출, 길이 무관 | 준비되지 않은 입력은 예외로 중단 | Custom | ○ |
-| `PIIMiddleware` | `before_agent` + `before_model` + `wrap_tool_call` | `before_agent`: 이번 입력의 주민번호·카드번호는 라벨로 가리고, 사기범 측 계좌·전화번호는 토큰(`<SCAM_ACCOUNT_1>` 등)으로 바꿔 `pii_vault`에 보관. `before_model`: 사람·Tool 메시지 재검사. `wrap_tool_call`: `verify_caller_number.phone`, `report_to_authority.target`의 토큰만 실행 직전 원문으로 복원 | 메시지 목록, `pii_vault`, 지정 Tool 인자 | 항상 | 주민번호·카드번호는 마스킹 실패 시 입력 차단 후 종료, 그 외는 통과 + 로그 | Custom (내장 PIIMiddleware는 `pii_vault` 기록 불가) | ○ |
+| `PIIMiddleware` | `before_agent` + `before_model` + `wrap_tool_call` | 1차 마스킹은 invoke 전 `pii.prepare_masked_input()`이 수행(외부 원문의 계좌·전화번호는 토큰화해 `pii_vault`에, 주민번호·카드번호는 라벨로). 미들웨어는 안전망: `before_agent`는 남은 원문을 guards 입력 JSON 형식을 유지한 채 가리고, `before_model`은 사람 메시지와 Tool 결과(주민번호·카드번호만)를 재검사. `wrap_tool_call`·`awrap_tool_call`은 `verify_caller_number.phone`, `report_to_authority.target`의 토큰만 실행 직전 원문으로 복원 | 메시지 목록, `pii_vault`, 지정 Tool 인자 | 항상 | 주민번호·카드번호를 가리지 못하면 입력 차단 후 종료, 그 외는 통과 + 로그 | Custom (내장 PIIMiddleware는 `pii_vault` 기록 불가) | ○ |
 | `MemoryInjectMiddleware` | `before_agent` + `wrap_model_call` | `before_agent`: Store의 `report_history`(`user_id` 네임스페이스)를 읽어 이번 입력의 도메인·전화번호·문구와 대조하고 일치 항목을 `history_matches`에 기록. `wrap_model_call`: `history_matches`가 있으면 "과거 신고 이력과 일치" 문장을 시스템 프롬프트에 주입하고, 연령대별 응답 톤·조치 제시 방식을 전환 | State (`history_matches`), 시스템 프롬프트 | 새 세션 첫 턴 또는 입력에 문구·도메인·번호 포함 / `age_group` 값 | Store 조회 실패 시 `history_matches=[]`로 진행(추측으로 채우지 않음), 톤은 기본값(`general`)으로 폴백 | Custom | △ |
 | `RetryMiddleware` | `wrap_tool_call` | 외부 API 호출 실패 재시도 | 도구 실행 | 도구 예외·타임아웃 발생 | 3회 실패 시 `unverified`로 기록 후 계속 진행 | Built-in | ○ |
 | `HumanInTheLoopMiddleware` | `wrap_tool_call` | 신고·외부 전송 등 비가역 행동 사용자 승인 | 특정 tool_call (`report_to_authority`) | 지정된 tool 이름 매칭 | 미승인 시 실행 중단 | Built-in | ○ |
 | `DamageStateMiddleware` | `after_model` | 모델이 추출한 피해 사실을 검증해 State에 반영하고, `damage_stage`·`risk_level`을 코드 규칙으로 산출 (단조 증가, 역행 무시). 초기 설계의 `update_case` Tool을 대체 | State (`damage_flags`, `damage_stage`, `risk_level`) | 매 모델 응답 | 추출값 검증 실패 시 State 미갱신 + 미확인 유지 (로그 기록) | Custom | ○ |
-| `OutputAuditMiddleware` | `after_model` | 단정·안심 표현 완화(G5), 근거 없는 판정 보류(G6), 응답 속 원문 PII 가림, `next_question` 1개로 제한, 공식 연락처 목록 대조(선택) | `structured_response`, 최종 AI 메시지 | 모델이 최종 판단을 낸 호출 (Tool 호출 중간 단계는 제외) | 스키마 검증 실패 시 확인된 State만으로 만든 안전 응답으로 전환. 의미 규칙을 고치지 못하면 원문 유지 + 경고 로그, 결과 요약은 AI 메시지 `response_metadata["unhook_audit"]`에 기록(`failed`는 2.3 감사 실패 승격 조건에 사용) | Custom | ○ |
+| `OutputAuditMiddleware` | `after_model` + `after_agent` | 단정·안심 표현 완화(G5), 근거 없는 판정 보류(G6), 응답 속 원문 PII 가림, `next_question` 1개로 제한, 공식 연락처 목록 대조(선택) | `structured_response`, 최종 AI 메시지 | `after_model`: 모델이 최종 판단을 낸 호출 (Tool 호출 중간 단계 제외). `after_agent`: 입력 보안 보강 등 다른 미들웨어가 바꾼 최종 `structured_response` (규칙 검사만, 분류기 재호출 없음) | 스키마 검증 실패 시 확인된 State만으로 만든 안전 응답으로 전환. 의미 규칙을 고치지 못하면 원문 유지 + 경고 로그, 결과 요약은 AI 메시지 `response_metadata["unhook_audit"]`에 기록(`failed`는 2.3 감사 실패 승격 조건에 사용) | Custom | ○ |
 | `SummarizationMiddleware` | `before_model` | 긴 멀티턴 이력 요약 | 프롬프트 (메시지 목록) | 토큰 수 임계치 초과 | 요약 실패 시 원문 유지 | Built-in | △ |
 
 #### 실행 순서 설계 근거
@@ -373,7 +373,7 @@ Hook 종류: `before_agent`(호출 시 1회) → `before_model`(모델 호출 �
 - `after_model` 구간에서는 `DamageState`(State 갱신)가 `OutputAudit`(응답 검사)보다 먼저 실행되어야 한다. 갱신된 피해 단계를 기준으로 응답의 적정성을 판단해야 하기 때문이다.
 - `InjectionGuard`는 규칙 선필터를 통과한 입력에 대해서만 판별 모델을 호출해 비용을 억제한다.
 - `PIIMiddleware`는 목록 맨 앞에 둔다. `before_agent`에서 먼저 가려야 `InjectionGuard`의 판별 모델, 로그, Checkpointer가 원문을 보지 않는다(2.1 입력 보호). 번호만 가리므로 `EmergencyRoute`의 송금 표현 탐지에는 영향이 없다.
-- LangChain은 `after_model` 훅을 등록 역순으로 실행한다. `DamageState`를 `OutputAudit`보다 먼저 실행하려면 목록에는 `OutputAudit`를 `DamageState`보다 앞에 넣는다.
+- LangChain은 `after_model`·`after_agent` 훅을 등록 역순으로 실행한다. `OutputAudit`가 `DamageState`·`InjectionGuard`(보강)·`EmergencyRoute`(첫 줄 고정) 이후에 검사하도록 목록에는 `PIIMiddleware` 바로 다음, 이들보다 앞에 넣는다.
 - `MemoryInject`의 Store 대조는 로컬 `InMemoryStore` 읽기라 외부 호출이 없으므로 `EmergencyRoute`의 조회형 Tool 비활성화 대상이 아니며, 송금 피해 턴에도 그대로 수행한다. 대조 규칙(도메인·전화번호는 정규화 후 완전 일치, 문구는 정규화 후 부분 일치)의 세부 임계치는 담당자(강준모) 확정 필요.
 
 ### 3.3 Guardrails
@@ -413,7 +413,7 @@ flowchart TD
 | G1. 긴급 상황 즉시 안내 | Input (`before_agent`) + Output (`after_agent`) | `money_sent=True` (경과시간은 안내 문구의 긴급도 조절에만 사용) | 규칙 기반 (입력 텍스트 + State 값) | 조회형 Tool 비활성화·승격 억제, 응답 첫 줄에 은행 콜센터 지급정지 안내 고정 | High |
 | G2. 입력 주제 필터 | Input (`before_agent`) | 오프토픽·서비스 무관 요청 | 규칙 기반 (키워드) | 요청 차단 + 안내 메시지 | Medium |
 | G3. 프롬프트 인젝션 탐지 | Input (`before_agent`) + 최종 결과 보강 (`after_agent`) | 사용자 입력·붙여넣은 원문 속 지시 탈취 시도 | 규칙 선필터 → 분류 모델(nano) | 탐지 여부와 무관하게 원문 격리. 탐지 근거를 최종 evidence에 추가, 판별 실패는 unverified에 기록 | High |
-| G4. PII 노출 방지 | Input (`before_agent`, `before_model` 재검사) | 계좌·주민번호·카드번호·전화번호 | 규칙 기반 (정규식 + 번호 주인 단서) | 피해자 정보는 라벨로 마스킹, 사기범 측 번호는 토큰화해 `pii_vault`에만 보관. 주민번호·카드번호 처리 실패 시 입력 차단 | High |
+| G4. PII 노출 방지 | Input (invoke 전 `prepare_masked_input`, `before_agent`·`before_model` 재검사) | 계좌·주민번호·카드번호·전화번호 (URL 퍼센트 인코딩 포함) | 규칙 기반 (정규식 + 입력 출처 + 번호 주인 단서) | 피해자 정보는 라벨로 마스킹, 외부 원문 속 번호는 토큰화해 `pii_vault`에만 보관. 주민번호·카드번호 처리 실패 시 입력 차단 | High |
 | G5. 단정 표현 차단 | Output (`after_model`) | "100% 사기", "확실한 사기" 등 확정 판정, "안전합니다", "사기가 아닙니다" 등 안심 단정 ("무조건 지급정지부터" 같은 행동 권유는 제외) | 규칙 기반 → 규칙에 없는 표현만 분류 모델(nano, 선택) | 규칙으로 찾은 표현은 완화 문구로 교체, 분류기만 잡은 경우 원문 유지 + 감사 실패 표시 | High |
 | G6. 근거 없는 판정 강등 | Output (`after_model`) | evidence가 빈 판정 | 규칙 기반 (스키마 검사) | `risk_level`을 `insufficient_info`로 전환 (위험도 하향이 아닌 판정 보류 — 3.1 핵심 원칙 예외) | Medium |
 | G7. 신고 행동 승인 | Tool 호출 전 | 신고 접수 등 비가역 행동 | Human-in-the-loop | 사람 승인 전까지 대기 | High |
@@ -479,6 +479,7 @@ flowchart TD
 | `tests/test_contracts.py` | 공유 계약 및 State 연결 검증 | 통합 | 구현 |
 | `tests/test_tools_memory.py` | Tool 판정·재시도 규약, 이력 대조·PII 미저장 검증 | 5 | 구현 |
 | `tests/test_guards.py` | 3개 사용자 흐름, 보안 경계 및 실패 경로 검증 | 3 | 구현, 모의 모델 사용 |
+| `tests/test_pii_audit.py` | 출처별 마스킹, 준비 함수 연결, Tool 인자 복원(동기·비동기), 최종 출력 감사 순서 검증 | 4 | 구현, 모의 모델 사용 |
 | `tests/test_rag.py` | 데이터 정합성(출처 2개 이상), 필터 3단계·`step_order` 정렬·폴백·예외 미발생·contacts 대조, Tool 연결 (가짜 임베딩) | 6 | 구현 |
 
 ### 공유 코드 사용 규칙
@@ -591,14 +592,23 @@ flowchart TD
   제어문자 제거·길이 제한(`MAX_EXTERNAL_FIELD_CHARS`)을 적용한다. 공식 대표번호는 대조에
   필요하므로 가리지 않는다. `pii.mask_text`는 토큰화를 하므로 이 자리에 쓰지 않는다 —
   vault를 함께 넘기지 않으면 해석 불가능한 토큰만 남는다.
-- `pii.py`는 `PIIMiddleware(external_splitter=None, tool_args_to_restore=None)`와 순수 함수 `find_pii()`, `find_unmasked_pii()`, `mask_text()`, `restore_tokens()`, `resolve_token()`을 제공한다.
-  붙여넣은 원문 구간 판별은 기본 규칙(`[Web발신]` 머리말, 따옴표, `문자:` 뒤)을 쓰며, `guards.py`가 기준을 확정하면
-  `text -> list[(start, end)]` 함수를 `external_splitter`로 넘긴다. 토큰 원문 복원은 정리서 표시·신고 접수에서만 한다.
+- `pii.py`는 `prepare_masked_input(user_statement, external_texts=None, *, vault=None) -> PreparedInput(message, vault)`,
+  문자열 어댑터 `make_guard_masker(vault)`, `PIIMiddleware(tool_args_to_restore=None)`와 순수 함수 `find_pii()`, `find_unmasked_pii()`,
+  `mask_text(text, vault, *, source)`, `restore_tokens()`, `resolve_token()`, `neutralize_tokens()`를 제공한다.
+  출처는 5.1에 따라 `external_texts`(사기범 측) / `user_statement` / `mixed`로만 구분하고 본문 구분자로 추정하지 않는다.
+  invoke 시 `{"messages": [prepared.message], "pii_vault": prepared.vault}`로 함께 전달하며, 후속 턴에는 체크포인트의 현재 vault를
+  `vault=`로 넘겨 토큰 번호를 이어간다. 토큰 원문 복원은 정리서 표시·신고 접수·이력 대조에서만 한다.
+  대화 밖(Store)에 저장할 문장은 `neutralize_tokens()`로 토큰 번호를 없앤다. 토큰 번호는 대화마다 1부터 다시 시작한다.
 - `MemoryInjectMiddleware`는 입력 속 전화번호가 이미 토큰으로 바뀌어 있으므로 `memory.match_history()` 호출 전에
   `pii.restore_tokens(text, state["pii_vault"])`로 복원한 텍스트를 넘긴다. 복원 텍스트는 대조에만 쓰고 모델에 전달하지 않는다.
 - `audit.py`는 `OutputAuditMiddleware(allowed_contacts=None, classifier=None)`와 `audit_assessment()`, `validate_payload()`,
   `build_safe_fallback()`을 제공한다. `allowed_contacts`에는 `data/contacts.json`의 번호 목록, `classifier`에는
-  `text -> bool` 형태의 nano 판별 함수를 넘긴다(둘 다 선택).
+  `text -> bool` 형태의 nano 판별 함수를 넘긴다(둘 다 선택). `after_agent`에서 최종 `structured_response`를 다시 검사한다.
+  `tools.py`가 `audit.mask_output_pii(text, vault, allowed_contacts=None) -> tuple[str, int]`를 사용하므로 이 시그니처는 유지한다.
+- `InMemorySaver`(Checkpointer)와 `InMemoryStore`(Store) 생성은 작업 묶음 2가 `middleware.py`에서 제공하고
+  (예: `build_checkpointer()`, `build_store()`), 작업 묶음 1이 `create_agent(checkpointer=..., store=...)`에 전달한다.
+  위 표의 `middleware.py` 책임에는 아직 적혀 있지 않으므로 반영이 필요하다. Store가 빠지면 `report_to_authority`가
+  이력 저장을 건너뛰고(TS-05 실패), Checkpointer가 빠지면 멀티턴·승인 재개가 동작하지 않는다.
 - 보안 클래스 구현은 `guards.py`, `pii.py`, `audit.py`에서 담당하고,
   `middleware.py`에서 조립해 `agent.py`로 전달한다. 함수명과 생성자 계약은 각 구현 착수 시 합의한다.
   이력 대조 임계치 등 기존 미정 사항은 아직 확정하지 않았다(RAG 구성은 2.5에서 확정).
@@ -609,11 +619,9 @@ flowchart TD
 
 #### 확정 위협 모델
 
-최신 main의 ④ 구현은 `pii.mask_text -> MaskResult`와 `PIIMiddleware`의
-`before_agent`·`before_model`·`wrap_tool_call`을 제공한다. 아래 준비 함수에는 `blocked` 확인과
-`.text` 반환 어댑터가 필요하며 `.vault`는 통합 계층에서 별도 연결한다.
-기존 hook만으로 Agent 호출 전 마스킹을 대신하지 않는다. ④의 `after_model` 감사에 더해
-입력 보안 `after_agent` 보강 이후 최종 감사 연결도 필요하다. 해당 어댑터·최종 조립은 통합 작업으로 남긴다.
+④는 준비 함수 연결용으로 `pii.prepare_masked_input()`(출처별 마스킹 후 아래 준비 함수를 호출하고 갱신된 vault 반환)과
+문자열 어댑터 `pii.make_guard_masker(vault)`를 제공한다. `OutputAuditMiddleware`는 `after_agent`에서도 최종 구조화 출력을 검사한다.
+invoke 시 vault 전달과 전체 미들웨어 등록 순서 조립은 통합(①·②) 작업으로 남긴다.
 
 공격자는 피해자에게 메시지를 보내는 사기범이며 **자신이 보낸 원문과 그 안의 URL 문자열만** 제어한다.
 피해자가 이를 상담에 붙여넣으면서 유입된다. 사용자 본인의 진술, 시스템·State·Store·공식 RAG 문서,
@@ -688,3 +696,4 @@ URL 검사는 `urllib.parse`로 경로·쿼리의 검사 사본만 한 번 디�
 | 2026-09-11 | `check_url_risk` 점수 산출을 단순 합산에서 결정적 신호 하한 + 보강 신호 누적 구조로 변경하고 5절에 규칙 명시. 유사 도메인 판정에 정상 도메인 화이트리스트를 도입해 정식 도메인 오탐을 제거하고, 브랜드 비교 범위를 호스트 전체로 넓혀 하위 도메인 위장을 탐지 |
 | 2026-09-11 | 2.5 `get_scam_playbook` RAG 구성 확정(작업 묶음 6) — 벡터 스토어 `InMemoryVectorStore`·임베딩 `text-embedding-3-small`, 출처별 원문을 step 단위로 청킹하고 `step_key`·`scam_types`·`damage_stages` 메타데이터 부여, 필터 3단계 완화(유형+단계 → 단계 → 폴백)와 `step_order` 표 정렬, `steps` 형식 `"<step_key> — <설명>"`, `search_playbook` 무예외 원칙, `load_playbook_index()` 사전 로딩. 5절에 묶음 6 공유 계약과 `tests/test_rag.py` 추가. `data/contacts.json`·`playbook_fallback.json`·`playbook_docs/`(금감원 2·KISA 1·경찰청 1, 청크 31개) 준비, `rag.py`·`tests/test_rag.py` 구현, `requirements.txt`에 `pyyaml` 추가(`langchain-openai`는 main에 이미 있음) |
 | 2026-09-11 | 작업 묶음 5 — Tool 반환값의 외부 문자열 정제(`audit.mask_output_pii` 재사용, 제어문자·길이 제한) 추가. 문구 대조에서 URL·숫자열을 제거하고 판정을 최장 공통 부분문자열에서 LCS 비율 방식으로 교체, 표시값을 유사도(%)로 변경. 근거 문장의 조사 처리 수정 |
+| 2026-09-11 | 작업 묶음 4를 입력 보안(5.1)과 연결 — `pii.prepare_masked_input`·`make_guard_masker`·`neutralize_tokens` 추가, 본문 구분자 기반 출처 추정 제거(`source` 인자), guards 입력 JSON 형식 유지 마스킹, URL 퍼센트 인코딩 번호 마스킹, Tool 결과는 주민번호·카드번호만 재검사, `awrap_tool_call` 추가. `OutputAuditMiddleware.after_agent` 최종 검사 추가. FR-08·3.1 `report_history`를 본인 이력으로 한정(사용자 간 조회 제외). 3.2·3.3 G4·5절·5.1 갱신, Checkpointer·Store 생성(묶음 2 제공, 묶음 1 전달) 명시, `mask_output_pii` 시그니처 유지 명시, `tests/test_pii_audit.py` 추가 |
