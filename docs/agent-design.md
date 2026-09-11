@@ -174,7 +174,7 @@ Middleware는 실행 중간에 로직을 넣는 위치와 방법이다. Guardrai
 |---|---|---|
 | **gpt-5-nano**<br>(기본 모델) | 모델 선정 이유 | 금융사기 유형 분류, 위험 신호 추출, 피해 단계 갱신, 간단한 추가 질문 생성처럼 짧고 반복적인 작업을 빠르게 처리하기 위해 기본 모델로 사용한다. 대부분의 일반적인 요청을 nano에서 완료하여 응답시간과 비용을 줄인다. |
 | | 주요 역할 | 사용자 입력 분석, 사기 유형 분류, URL·전화번호 등 필요한 Tool 선택, 피해 단계 갱신, 위험도 산정, Structured Output 생성 |
-| | 주요 설정 | `model="gpt-5-nano"`<br>`reasoning_effort="minimal"` 또는 `"low"`<br>`timeout=60`<br>`max_output_tokens=800` |
+| | 주요 설정 | `model="gpt-5-nano"`<br>`reasoning_effort="low"`<br>`timeout=60`<br>`max_output_tokens=4000` |
 | | 처리 대상 | 단일 문자 또는 URL 분석, 명확한 스미싱 패턴, 간단한 기관 사칭 확인, 피해가 발생하지 않은 일반 문의, 기존 State에 따라 다음 질문을 선택할 수 있는 경우 |
 | | 제약사항 | 판단 근거가 부족하면 임의로 결론을 만들지 않는다. `risk_level="insufficient_info"`로 처리하고 한 번에 하나의 추가 질문만 생성한다. |
 | **gpt-5-nano**<br>(재검토 프로필) | 모델 선정 이유 | 단일 모델 운영을 유지하면서 입력량이 많거나 여러 사기 유형이 섞인 경우, Tool 결과가 충돌하는 경우에 한 번 더 검토한다. |
@@ -509,7 +509,7 @@ flowchart TD
   신뢰도는 기준 미만, 입력 문자 수와 대화 턴 수는 기준 이상일 때 해당 조건을 만족한다.
   여러 메시지 입력, 복합 유형, 근거 충돌, 감사 실패 조건과 긴급 분기의 승격 억제는
   Agent/Middleware에서 별도로 구현한다. 설정 파일 자체는 모델 선택을 수행하지 않는다.
-  nano 판별기는 `DEFAULT_MODEL_TIMEOUT_SECONDS=60`, `DEFAULT_MODEL_MAX_OUTPUT_TOKENS=800`을 사용한다.
+  nano 판별기는 `DEFAULT_MODEL_TIMEOUT_SECONDS=60`, `DEFAULT_MODEL_MAX_OUTPUT_TOKENS=4000`을 사용한다.
   입력 준비 한도는 `GUARD_MAX_INPUT_CHARS=12000`이다. 전체 Agent 호출 상한, 외부 Tool 재시도는 담당자 확정 후 추가한다.
   RAG 설정(임베딩 모델명, 임계치, k)은 `config.py`가 아니라 `rag.py` 상단 상수로 둔다(2.5 RAG 구성).
 - `.env.example`은 키 이름을 공유하는 템플릿이다. 실제 키는 환경변수로 전달하며,
@@ -683,7 +683,7 @@ URL 검사는 `urllib.parse`로 경로·쿼리의 검사 사본만 한 번 디�
   애매한 입력, 공격 문구를 포함한 상담, 문맥상 짧은 답변은 계속 처리한다. 이미 확인된 송금·앱 설치 피해는
   이 필터로 종료하지 않아 ② 담당 긴급 안내 경로를 보존한다.
 - 인젝션 판별기는 nano의 독립적인 구조화 출력 호출이며 업무 Tool·Store·PII vault에 접근하지 않는다.
-  기본 설정은 `timeout=60`, 최대 출력 토큰 800, 자동 재시도 0회다. 타임아웃·파싱 오류는 미탐지와 구분한다.
+  기본 설정은 `timeout=60`, 최대 출력 토큰 4000, 자동 재시도 0회다. 타임아웃·파싱 오류는 미탐지와 구분한다.
   규칙에서 선별되지 않은 공격은 판별되지 않을 수 있으며, 격리는 탐지 여부에 관계없이 유지한다.
 - `after_agent`는 `structured_response`의 `injection_detected`, 고정 탐지 근거 및 판별 불가 정보를 보강한다.
   위험도·피해 플래그·승인 여부는 변경하지 않는다. UI는 최종 `structured_response`를 사용하며,
@@ -726,3 +726,4 @@ URL 검사는 `urllib.parse`로 경로·쿼리의 검사 사본만 한 번 디�
 | 2026-09-11 | 작업 묶음 4를 입력 보안(5.1)과 연결 — `pii.prepare_masked_input`·`make_guard_masker`·`neutralize_tokens` 추가, 본문 구분자 기반 출처 추정 제거(`source` 인자), guards 입력 JSON 형식 유지 마스킹, URL 퍼센트 인코딩 번호 마스킹, Tool 결과는 주민번호·카드번호만 재검사, `awrap_tool_call` 추가. `OutputAuditMiddleware.after_agent` 최종 검사 추가. FR-08·3.1 `report_history`를 본인 이력으로 한정(사용자 간 조회 제외). 3.2·3.3 G4·5절·5.1 갱신, Checkpointer·Store 생성(묶음 2 제공, 묶음 1 전달) 명시, `mask_output_pii` 시그니처 유지 명시, `tests/test_pii_audit.py` 추가 |
 | 2026-09-11 | 작업 묶음 5 — `check_url_risk`가 `URLRiskResult.status`를 산출하도록 구현. 판정 우선순위와 `risk_score` 의미 축소(`unverifiable`·`clean`·`malformed`는 0)를 5절에 명시하고 단축 URL 가중치를 제거. 공유 스키마 계약(PR #11)의 생산자 갱신을 완료 |
 | 2026-09-11 | 작업 묶음 2 — `middleware.py`에 `build_checkpointer()`·`build_store()` 추가(5절 626줄 반영 요구). 5절 파일 책임 표에 Checkpointer·Store 제공을 명시 |
+| 2026-09-11 | 통합 — `app.py`(Streamlit 시연 화면) 추가. Agent Core 안정화: 구조화 출력을 OpenAI strict 스키마로 강제(필수 필드 누락 오류 방지), nano `reasoning_effort`를 `minimal`→`low`로 올려 Tool 호출 누락 완화, 이에 따라 2.3·5절 `max_output_tokens` 800→4000(gpt-5는 추론 토큰이 출력 한도에 포함). 프롬프트에 URL·`<SCAM_PHONE_n>` 토큰이 있으면 최종 답변 전 Tool 호출을 명시 |
