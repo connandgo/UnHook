@@ -5,6 +5,7 @@ assigns the derivation of `damage_stage` / `risk_level` and the prevention of
 regression to `DamageStateMiddleware`.
 """
 
+import logging
 import re
 
 from langchain.agents.middleware import (
@@ -15,9 +16,13 @@ from langchain.agents.middleware import (
 )
 from langchain_core.messages import HumanMessage
 
+import memory
+from pii import restore_tokens
 from schemas import ActionStep, DamageFlags, DamageStage, RiskLevel, ScamAssessment
 from state import UnHookState
 from tools import LOOKUP_TOOL_NAMES
+
+logger = logging.getLogger(__name__)
 
 RISK_ORDER: dict[RiskLevel, int] = {
     "insufficient_info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4,
@@ -243,3 +248,57 @@ def emergency_route_notice(state: UnHookState, runtime) -> dict | None:
             update={"immediate_actions": renumbered[:MAX_ACTIONS]}
         )
     }
+
+
+SENIOR_TONE = (
+    "이 사용자는 고령층입니다. 짧고 쉬운 문장을 쓰고, 지금 할 행동을 한 번에 하나씩만 "
+    "제시하십시오. 전문용어 대신 일상 표현을 쓰십시오."
+)
+
+
+@before_agent(state_schema=UnHookState)
+def memory_inject_lookup(state: UnHookState, runtime) -> dict:
+    """Store의 과거 신고 이력을 이번 입력과 대조해 일치 항목을 기록한다.
+
+    PII 미들웨어가 먼저 돌아 전화번호를 토큰으로 바꿔놓으므로, 대조 전에
+    `pii_vault`로 원문을 되돌린다. 복원한 텍스트는 대조에만 쓰고 모델에 넘기지
+    않는다.
+    """
+    store = getattr(runtime, "store", None)
+    if store is None:
+        return {"history_matches": []}
+
+    text = _last_human_text(state.get("messages"))
+    if not text:
+        return {"history_matches": []}
+
+    try:
+        history = memory.load_history(store, runtime.context.user_id)
+        matches = memory.match_history(
+            history, restore_tokens(text, state.get("pii_vault"))
+        )
+    except Exception:
+        # 조회 실패는 추측으로 채우지 않는다 (설계서 1.5 안정성).
+        logger.exception("과거 신고 이력 조회 실패")
+        return {"history_matches": []}
+
+    return {"history_matches": matches}
+
+
+@wrap_model_call(state_schema=UnHookState)
+def memory_inject_prompt(request, handler):
+    """과거 이력 일치 항목과 연령대별 응답 톤을 시스템 프롬프트에 얹는다."""
+    blocks: list[str] = []
+
+    matches = request.state.get("history_matches") or []
+    if matches:
+        blocks.append(memory.summarize_for_prompt(matches))
+
+    if getattr(request.runtime.context, "age_group", "general") == "senior":
+        blocks.append(SENIOR_TONE)
+
+    if blocks:
+        base = request.system_prompt or ""
+        request.system_prompt = "\n\n".join([base, *blocks]) if base else "\n\n".join(blocks)
+
+    return handler(request)
