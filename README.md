@@ -58,17 +58,18 @@ UnHook/
 |-- audit.py                   응답 검증 (4)
 |-- tools.py                   URL 검사, 번호 확인, 신고 Tool (5)
 |-- memory.py                  과거 신고 이력 저장 및 대조 (5)
-|-- rag.py                     [예정] 대응 절차 검색 (6)
+|-- rag.py                     대응 절차 문서 청킹·적재·검색 (6)
 |
 |-- data/
 |   |-- kisa_urls.csv          URL 검사 데이터 (5)
-|   |-- contacts.json          공식 연락처 (6)
-|   |-- playbook_fallback.json 검색 실패 시 기본 절차 (6)
-|   `-- playbook_docs/          금감원/KISA 원문 (6)
+|   |-- contacts.json          연락처 테이블, id→label (6)
+|   |-- playbook_fallback.json step_keys·step_order·검색 실패 시 기본 절차 (6)
+|   `-- playbook_docs/         금감원·KISA·경찰청 원문, step 단위 청크 (6)
 `-- tests/
     |-- test_contracts.py      공통 스키마 및 State 연결 검증
     |-- test_tools_memory.py   Tool 및 이력 메모리 검증 (5)
-    `-- test_guards.py         입력 보안 3개 흐름 및 연결·오류 검증
+    |-- test_guards.py         입력 보안 3개 흐름 및 연결·오류 검증
+    `-- test_rag.py            RAG 검색·정렬·폴백 검증 (6)
 ```
 
 `memory.py`는 Store 저장·조회·대조 로직을 제공한다. 이를 호출해 State와 프롬프트에
