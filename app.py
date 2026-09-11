@@ -48,6 +48,17 @@ def reset_conversation() -> None:
     st.session_state.report_done = False
 
 
+def thread_messages(agent: Any, thread_id: str) -> list[Any]:
+    """본 스레드 체크포인트에 저장된 메시지 목록. 없으면 빈 목록."""
+    try:
+        saved = agent.checkpointer.get_tuple({"configurable": {"thread_id": thread_id}})
+    except Exception:
+        return []
+    if saved is None:
+        return []
+    return list((saved.checkpoint.get("channel_values") or {}).get("messages") or [])
+
+
 def collect_tool_activity(raw_state: dict[str, Any], seen: set[str]) -> list[str]:
     lines: list[str] = []
     for message in raw_state.get("messages", []):
@@ -114,7 +125,7 @@ def run_turn(statement: str, quoted: str, *, report_approved: bool = False) -> N
         user_statement=statement,
         quoted_content=quoted,
         state=st.session_state.snapshot,
-        multiple_messages="\n" in quoted,
+        multiple_messages=len([b for b in quoted.split("\n\n") if b.strip()]) > 1,
         conversation_turns=st.session_state.turn_count,
         report_approved=report_approved,
     )
@@ -129,7 +140,12 @@ def run_turn(statement: str, quoted: str, *, report_approved: bool = False) -> N
         st.session_state.history.append({"role": "error", "text": detail})
         return
 
-    tool_lines = collect_tool_activity(result.raw_state, st.session_state.seen_tool_events)
+    # 재검토(승격)가 일어나면 result.raw_state는 재검토용 별도 스레드의 상태라
+    # 1차 nano 실행에서 부른 Tool이 빠진다. 본 스레드의 체크포인트도 함께 읽는다.
+    tool_lines = collect_tool_activity(
+        {"messages": thread_messages(agent, st.session_state.thread_id) + list(result.raw_state.get("messages", []))},
+        st.session_state.seen_tool_events,
+    )
     st.session_state.history.append({
         "role": "assistant",
         "assessment": result.assessment.model_dump(mode="json"),
