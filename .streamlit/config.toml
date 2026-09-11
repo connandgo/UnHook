@@ -1,0 +1,53 @@
+# Un Hook 화면 테마. 라이트·다크 팔레트는 디자인 토큰(globals.css)과 동일하게 맞추고 글꼴은 Pretendard를 쓴다.
+[theme]
+font = "Pretendard, sans-serif"
+codeFont = "Menlo, monospace"
+baseRadius = "1.3rem"
+buttonRadius = "1.3rem"
+showWidgetBorder = true
+
+[theme.light]
+primaryColor = "#1E9DF1"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F7F8F8"
+textColor = "#0F1419"
+borderColor = "#E1EAEF"
+linkColor = "#1E9DF1"
+codeBackgroundColor = "#F7F9FA"
+blueColor = "#1E9DF1"
+greenColor = "#00B87A"
+yellowColor = "#F7B928"
+redColor = "#F4212E"
+chartCategoricalColors = ["#1E9DF1", "#00B87A", "#F7B928", "#17BF63", "#E0245E"]
+
+[theme.light.sidebar]
+backgroundColor = "#F7F8F8"
+secondaryBackgroundColor = "#E3ECF6"
+textColor = "#0F1419"
+borderColor = "#E1E8ED"
+primaryColor = "#1E9DF1"
+
+[theme.dark]
+primaryColor = "#1C9CF0"
+backgroundColor = "#000000"
+secondaryBackgroundColor = "#17181C"
+textColor = "#E7E9EA"
+borderColor = "#242628"
+linkColor = "#1C9CF0"
+codeBackgroundColor = "#181818"
+blueColor = "#1C9CF0"
+greenColor = "#00B87A"
+yellowColor = "#F7B928"
+redColor = "#F4212E"
+chartCategoricalColors = ["#1E9DF1", "#00B87A", "#F7B928", "#17BF63", "#E0245E"]
+
+[theme.dark.sidebar]
+backgroundColor = "#17181C"
+secondaryBackgroundColor = "#061622"
+textColor = "#D9D9D9"
+borderColor = "#38444D"
+primaryColor = "#1DA1F2"
+
+[client]
+# 시연 화면에서 Deploy 버튼 등 개발용 항목을 숨긴다. 설정(테마 전환) 메뉴는 남는다.
+toolbarMode = "viewer"
