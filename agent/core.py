@@ -11,6 +11,7 @@ from langchain.agents.middleware import (
     ModelCallLimitMiddleware,
     ToolCallLimitMiddleware,
 )
+from langchain.agents.structured_output import ProviderStrategy
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
@@ -41,6 +42,39 @@ def _load_default_tools() -> tuple[AgentTool, ...]:
     from tools import ALL_TOOLS
 
     return tuple(ALL_TOOLS)
+
+
+def _strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite a Pydantic JSON schema to OpenAI strict-mode form.
+
+    Strict mode requires every property to be listed in ``required`` and
+    ``additionalProperties: false`` on every object. Optional fields keep their
+    ``null`` alternative, so Pydantic validation is unchanged.
+    """
+    if isinstance(schema, dict):
+        out: dict[str, Any] = {}
+        for key, value in schema.items():
+            if key == "default":
+                continue
+            out[key] = _strict_json_schema(value)
+        if out.get("type") == "object" and isinstance(out.get("properties"), dict):
+            out["required"] = list(out["properties"].keys())
+            out["additionalProperties"] = False
+        return out
+    if isinstance(schema, list):
+        return [_strict_json_schema(item) for item in schema]
+    return schema
+
+
+def _strict_response_format() -> ProviderStrategy[ScamAssessment]:
+    """Provider-native structured output with strict schema enforcement.
+
+    Without ``strict`` the model may omit required fields such as
+    ``injection_detected`` and the turn fails at validation time.
+    """
+    strategy = ProviderStrategy(ScamAssessment, strict=True)
+    strategy.schema_spec.json_schema = _strict_json_schema(strategy.schema_spec.json_schema)
+    return strategy
 
 
 def _assessment_from_result(result: dict[str, Any]) -> ScamAssessment:
@@ -152,7 +186,9 @@ class UnHookAgent:
         self.nano_model = ChatOpenAI(
             model=settings.nano_model,
             api_key=api_key,
-            reasoning_effort="minimal",
+            # "minimal" makes gpt-5 skip tool calls and answer directly;
+            # "low" keeps latency small while still planning lookups.
+            reasoning_effort="low",
             timeout=settings.nano_timeout_seconds,
             max_retries=0,
             max_completion_tokens=settings.nano_max_output_tokens,
@@ -203,10 +239,11 @@ class UnHookAgent:
             tools=selected_tools,
             system_prompt=SYSTEM_PROMPT,
             middleware=(*middleware, *limits),
-            # Passing the schema lets LangChain select OpenAI's provider-native
-            # structured output. Unlike ToolStrategy, it does not force another
-            # tool call after the requested lookup has completed.
-            response_format=ScamAssessment,
+            # OpenAI's provider-native structured output in strict mode. Unlike
+            # ToolStrategy, it does not force another tool call after the
+            # requested lookup has completed, and strict mode guarantees every
+            # schema field is present.
+            response_format=_strict_response_format(),
             state_schema=UnHookState,
             context_schema=UnHookRuntimeContext,
             checkpointer=self.checkpointer,

@@ -16,7 +16,9 @@ LOW_CONFIDENCE_THRESHOLD: Final[float] = 0.7
 LONG_INPUT_CHAR_THRESHOLD: Final[int] = 4_000
 LONG_CONVERSATION_TURN_THRESHOLD: Final[int] = 6
 DEFAULT_MODEL_TIMEOUT_SECONDS: Final[int] = 60
-DEFAULT_MODEL_MAX_OUTPUT_TOKENS: Final[int] = 800
+# gpt-5 counts hidden reasoning tokens here. 800 was enough only for
+# reasoning_effort="minimal"; "low" plus a tool call needs more headroom.
+DEFAULT_MODEL_MAX_OUTPUT_TOKENS: Final[int] = 4000
 REVIEW_MODEL_MAX_OUTPUT_TOKENS: Final[int] = 8000
 GUARD_MAX_INPUT_CHARS: Final[int] = 12_000
 

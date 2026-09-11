@@ -29,6 +29,26 @@ API 키 이름은 `.env.example`을 참고한다. 키는 실행 환경에 설정
 `.env`를 자동으로 읽지 않는다. 기본 보안 판별기는 의심 입력에서 OpenAI API를 호출하므로
 실행 전에 환경변수를 설정한다. 테스트는 모의 모델을 사용해 키·네트워크 없이 실행한다.
 
+## 시연 화면 실행
+
+`app.py`는 Streamlit 기반 시연 화면이며 `agent/`의 전체 Agent(Tool·Middleware·마스킹 포함)에 연결된다.
+
+```bash
+python -m pip install -r requirements.txt
+python -m pip install streamlit
+export OPENAI_API_KEY="발급받은 키"
+streamlit run app.py
+```
+
+- 브라우저에서 `내 상황 / 질문`과 `받은 문자·통화 원문`을 나눠 입력하고 **보내기**를 누른다.
+- 응답은 위험도·사기 유형·피해 단계·지금 할 일·판단 근거·확인 필요·다음 질문으로 표시되며,
+  **실행 정보**에서 사용 모델과 Tool 호출·결과를 확인할 수 있다.
+- 사이드바에서 현재 피해 상태(링크 클릭·앱 설치·송금·체크리스트)를 확인하고 **새 대화 시작**으로 스레드를 초기화한다.
+- 신고 접수는 **신고 접수 승인** 버튼을 누른 턴에서만 `report_to_authority`가 실행된다(HITL).
+- Checkpointer·Store는 인메모리라 서버를 재시작하면 대화와 신고 이력이 사라진다.
+
+터미널에서만 확인하려면 `python -m agent.cli`를 사용한다.
+
 ## 디렉터리 구조
 
 아래는 구현 예정 파일까지 포함한 팀 작업 구조다. `[예정]`은 아직 생성하지 않은 파일/폴더이며,
@@ -46,7 +66,7 @@ UnHook/
 |-- requirements.txt           공통 코드 의존성
 |-- .env.example               환경변수 이름, 실제 키는 포함하지 않음
 |-- config.py                  공통 모델명 및 승격 기준, 전원 공유
-|-- app.py                     [예정] 시연 화면, 나중에 연결
+|-- app.py                     Streamlit 시연 화면, Agent 실행·신고 승인 연결 (통합)
 |
 |-- schemas.py                 출력 스키마 및 Tool 결과 타입 (1, 전원 공유)
 |-- state.py                   State 및 Context (2, 전원 공유)
