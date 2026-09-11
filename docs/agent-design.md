@@ -482,7 +482,7 @@ flowchart TD
 | `state.py` | `UnHookState`, `RuntimeContext`, 새 대화 초기값 | 2, 전원 공유 | 구현 |
 | `config.py` | 2.3의 확정 모델명과 승격 판단 기준 | 공통 | 구현 |
 | `agent.py` | Agent 조립, 모델, 프롬프트, 공통 스키마 연결 | 1 | 구현 예정 |
-| `middleware.py` | 피해 상태 갱신, 긴급 분기, 과거 이력 주입, 승인 및 미들웨어 조립(`build_middleware()`) | 2 | 구현 |
+| `middleware.py` | 피해 상태 갱신, 긴급 분기, 과거 이력 주입, 승인, 미들웨어 조립(`build_middleware()`), Checkpointer·Store 제공(`build_checkpointer()`·`build_store()`) | 2 | 구현 |
 | `guards.py` | 주제 필터, 인젝션 탐지, 원문 격리 | 3 | 구현, 전체 Agent 연결은 별도 |
 | `pii.py` | 개인정보 마스킹 및 토큰화 | 4 | 구현 |
 | `audit.py` | 출력 검증, 단정 표현 및 근거 검사 | 4 | 구현 |
@@ -630,9 +630,9 @@ flowchart TD
   `text -> bool` 형태의 nano 판별 함수를 넘긴다(둘 다 선택). `after_agent`에서 최종 `structured_response`를 다시 검사한다.
   `tools.py`가 `audit.mask_output_pii(text, vault, allowed_contacts=None) -> tuple[str, int]`를 사용하므로 이 시그니처는 유지한다.
 - `InMemorySaver`(Checkpointer)와 `InMemoryStore`(Store) 생성은 작업 묶음 2가 `middleware.py`에서 제공하고
-  (예: `build_checkpointer()`, `build_store()`), 작업 묶음 1이 `create_agent(checkpointer=..., store=...)`에 전달한다.
-  위 표의 `middleware.py` 책임에는 아직 적혀 있지 않으므로 반영이 필요하다. Store가 빠지면 `report_to_authority`가
-  이력 저장을 건너뛰고(TS-05 실패), Checkpointer가 빠지면 멀티턴·승인 재개가 동작하지 않는다.
+  `build_checkpointer()`·`build_store()`로 노출하며, 작업 묶음 1이 `create_agent(checkpointer=..., store=...)`에 전달한다.
+  Store가 빠지면 `report_to_authority`가 이력 저장을 건너뛰고(TS-05 실패), Checkpointer가 빠지면
+  멀티턴·승인 재개가 동작하지 않는다. Colab 단일 세션 기준이라 둘 다 인메모리이며 세션 종료 시 소멸한다(1.5).
 - 보안 클래스 구현은 `guards.py`, `pii.py`, `audit.py`에서 담당하고,
   `middleware.py`에서 조립해 `agent.py`로 전달한다. 함수명과 생성자 계약은 각 구현 착수 시 합의한다.
   이력 대조 임계치 등 기존 미정 사항은 아직 확정하지 않았다(RAG 구성은 2.5에서 확정).
@@ -723,3 +723,4 @@ URL 검사는 `urllib.parse`로 경로·쿼리의 검사 사본만 한 번 디�
 | 2026-09-11 | 작업 묶음 2 — `middleware.py` 구현(`DamageState`·`EmergencyRoute`·`MemoryInject`)과 `build_middleware()` 조립. 3.1에 `emergency_mode` State 추가. `EmergencyRoute`의 Hook을 `before_agent` + `wrap_model_call` + `after_agent`로 정정 — Tool 목록은 `ModelRequest`에만 있어 `before_agent`에서 끌 수 없다. "응답 첫 줄 고정"을 `immediate_actions[0]` 고정으로 정정 — 구조화 출력에서는 AIMessage 본문이 비어 있고 4.2 TS-02-C003도 `immediate_actions[0]`을 기대한다(1.3 S3·2.1·2.2·3.2·3.3 G1·4.2 연쇄 수정). 2.5에 `risk_level` 산출식과 `STAGE_RISK_FLOOR` 표 추가 — TS-04-C001이 Tool 0회·`damage_stage=none`에서 `critical`을 요구하므로 모델 판정을 입력으로 쓰고 미들웨어는 하한과 단조 증가를 강제한다. 2.5 checklist 키를 `playbook_fallback.json`의 `step_keys`·`step_order`로 확정 |
 | 2026-09-11 | 작업 묶음 4를 입력 보안(5.1)과 연결 — `pii.prepare_masked_input`·`make_guard_masker`·`neutralize_tokens` 추가, 본문 구분자 기반 출처 추정 제거(`source` 인자), guards 입력 JSON 형식 유지 마스킹, URL 퍼센트 인코딩 번호 마스킹, Tool 결과는 주민번호·카드번호만 재검사, `awrap_tool_call` 추가. `OutputAuditMiddleware.after_agent` 최종 검사 추가. FR-08·3.1 `report_history`를 본인 이력으로 한정(사용자 간 조회 제외). 3.2·3.3 G4·5절·5.1 갱신, Checkpointer·Store 생성(묶음 2 제공, 묶음 1 전달) 명시, `mask_output_pii` 시그니처 유지 명시, `tests/test_pii_audit.py` 추가 |
 | 2026-09-11 | 작업 묶음 5 — `check_url_risk`가 `URLRiskResult.status`를 산출하도록 구현. 판정 우선순위와 `risk_score` 의미 축소(`unverifiable`·`clean`·`malformed`는 0)를 5절에 명시하고 단축 URL 가중치를 제거. 공유 스키마 계약(PR #11)의 생산자 갱신을 완료 |
+| 2026-09-11 | 작업 묶음 2 — `middleware.py`에 `build_checkpointer()`·`build_store()` 추가(5절 626줄 반영 요구). 5절 파일 책임 표에 Checkpointer·Store 제공을 명시 |
