@@ -17,6 +17,7 @@ LONG_INPUT_CHAR_THRESHOLD: Final[int] = 4_000
 LONG_CONVERSATION_TURN_THRESHOLD: Final[int] = 6
 DEFAULT_MODEL_TIMEOUT_SECONDS: Final[int] = 20
 DEFAULT_MODEL_MAX_OUTPUT_TOKENS: Final[int] = 800
+REVIEW_MODEL_MAX_OUTPUT_TOKENS: Final[int] = 4096
 GUARD_MAX_INPUT_CHARS: Final[int] = 12_000
 
 
@@ -30,9 +31,13 @@ class AgentSettings:
     nano_timeout_seconds: float = DEFAULT_MODEL_TIMEOUT_SECONDS
     review_timeout_seconds: float = 30.0
     nano_max_output_tokens: int = DEFAULT_MODEL_MAX_OUTPUT_TOKENS
-    review_max_output_tokens: int = 1200
+    # gpt-5 counts hidden reasoning tokens against max_completion_tokens.
+    # Medium reasoning can consume the old 1,200-token budget before emitting JSON.
+    review_max_output_tokens: int = REVIEW_MODEL_MAX_OUTPUT_TOKENS
     confidence_threshold: float = LOW_CONFIDENCE_THRESHOLD
-    recursion_limit: int = 12
+    # A no-tool turn traverses about 18 graph nodes after the full middleware
+    # stack is assembled. Leave room for the bounded model/tool loop below.
+    recursion_limit: int = 50
     model_call_limit: int = 4
     tool_call_limit: int = 6
 
@@ -63,4 +68,5 @@ __all__ = [
     "LONG_CONVERSATION_TURN_THRESHOLD",
     "LONG_INPUT_CHAR_THRESHOLD",
     "LOW_CONFIDENCE_THRESHOLD",
+    "REVIEW_MODEL_MAX_OUTPUT_TOKENS",
 ]

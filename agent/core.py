@@ -11,7 +11,6 @@ from langchain.agents.middleware import (
     ModelCallLimitMiddleware,
     ToolCallLimitMiddleware,
 )
-from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
@@ -35,6 +34,42 @@ ALLOWED_TOOL_NAMES = frozenset(
 )
 LOOKUP_TOOL_NAMES = frozenset({"check_url_risk", "verify_caller_number"})
 REPORT_TOOL_NAME = "report_to_authority"
+
+
+def _load_default_tools() -> tuple[AgentTool, ...]:
+    """Load the repository's canonical Tool list without creating a cycle."""
+    from tools import ALL_TOOLS
+
+    return tuple(ALL_TOOLS)
+
+
+def _assessment_from_result(result: dict[str, Any]) -> ScamAssessment:
+    """Validate Agent output and explain an incomplete Agent loop clearly."""
+    structured = result.get("structured_response")
+    if structured is not None:
+        return ScamAssessment.model_validate(structured)
+
+    called_tools: list[str] = []
+    for message in result.get("messages", []):
+        for call in getattr(message, "tool_calls", None) or []:
+            name = call.get("name")
+            if name and name != "ScamAssessment":
+                called_tools.append(str(name))
+    detail = ", ".join(dict.fromkeys(called_tools)) or "없음"
+    raise RuntimeError(
+        "Agent가 최종 ScamAssessment를 생성하지 못했습니다. "
+        f"실행 중 요청한 Tool: {detail}"
+    )
+
+
+def _output_audit_failed(result: dict[str, Any]) -> bool:
+    """Read OutputAuditMiddleware's same-turn review signal."""
+    for message in reversed(result.get("messages", [])):
+        metadata = getattr(message, "response_metadata", None) or {}
+        audit = metadata.get("unhook_audit")
+        if isinstance(audit, dict):
+            return bool(audit.get("failed"))
+    return False
 
 
 class AgentTurnInput(BaseModel):
@@ -103,14 +138,13 @@ class UnHookAgent:
         self,
         *,
         settings: AgentSettings,
-        tools: Sequence[AgentTool] = (),
-        middleware: Sequence[AgentMiddleware[Any, Any]] = (),
+        tools: Sequence[AgentTool] | None = None,
+        middleware: Sequence[AgentMiddleware[Any, Any]] | None = None,
         checkpointer: Any | None = None,
         store: Any | None = None,
     ):
         self.settings = settings
-        self.tools = tuple(tools)
-        self.middleware = tuple(middleware)
+        self.tools = tuple(tools) if tools is not None else _load_default_tools()
         self.checkpointer = checkpointer or InMemorySaver()
         self.store = store or InMemoryStore()
         self.policy = ModelEscalationPolicy(settings.confidence_threshold)
@@ -131,6 +165,18 @@ class UnHookAgent:
             max_retries=0,
             max_completion_tokens=settings.review_max_output_tokens,
         )
+        if middleware is None:
+            from middleware import build_middleware
+            from schemas import InjectionDecision
+
+            classifier = self.nano_model.with_structured_output(InjectionDecision)
+            self.middleware = tuple(build_middleware(classifier=classifier))
+        else:
+            self.middleware = tuple(middleware)
+        self.guarded_input = any(
+            type(item).__name__ == "ContentIsolationMiddleware"
+            for item in self.middleware
+        )
 
     def _graph(self, model: ChatOpenAI, turn: AgentTurnInput):
         selected_tools = select_tools(self.tools, turn)
@@ -144,24 +190,88 @@ class UnHookAgent:
                 exit_behavior="error",
             ),
         )
+        middleware = self.middleware
+        # report_approved is the application's recorded HITL approval. Once it is
+        # true, do not interrupt the already-approved call a second time.
+        if turn.report_approved:
+            middleware = tuple(
+                item for item in middleware
+                if type(item).__name__ != "HumanInTheLoopMiddleware"
+            )
         return create_agent(
             model=model,
             tools=selected_tools,
             system_prompt=SYSTEM_PROMPT,
-            middleware=(*self.middleware, *limits),
-            response_format=ToolStrategy(
-                ScamAssessment,
-                handle_errors=(
-                    "스키마를 다시 확인하세요. 확인되지 않은 값은 null 또는 unverified로 "
-                    "표시하고 immediate_actions는 priority 순으로 반환하세요."
-                ),
-            ),
+            middleware=(*middleware, *limits),
+            # Passing the schema lets LangChain select OpenAI's provider-native
+            # structured output. Unlike ToolStrategy, it does not force another
+            # tool call after the requested lookup has completed.
+            response_format=ScamAssessment,
             state_schema=UnHookState,
             context_schema=UnHookRuntimeContext,
             checkpointer=self.checkpointer,
             store=self.store,
             name="unhook_agent",
         )
+
+    @staticmethod
+    def _config(thread_id: str, model_name: str, recursion_limit: int) -> dict[str, Any]:
+        return {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": recursion_limit,
+            "tags": ["unhook", model_name],
+        }
+
+    def _state_input(self, graph: Any, turn: AgentTurnInput, config: dict[str, Any]) -> dict[str, Any]:
+        payload = build_turn_payload(
+            user_statement=turn.user_statement,
+            quoted_content="",
+            state=turn.state,
+            tool_results=turn.tool_results,
+            age_group=turn.age_group,
+        )
+        state_input: dict[str, Any] = {
+            **turn.state.model_dump(),
+            "tool_results": turn.tool_results,
+        }
+        if not self.guarded_input:
+            state_input["messages"] = [HumanMessage(content=build_turn_payload(
+                user_statement=turn.user_statement,
+                quoted_content=turn.quoted_content,
+                state=turn.state,
+                tool_results=turn.tool_results,
+                age_group=turn.age_group,
+            ))]
+            return state_input
+
+        from pii import prepare_masked_input
+
+        prior_vault: dict[str, str] = {}
+        try:
+            snapshot = graph.get_state(config)
+            values = getattr(snapshot, "values", {}) or {}
+            prior_vault = dict(values.get("pii_vault") or {})
+        except (KeyError, LookupError, ValueError):
+            # A new thread has no checkpoint yet.
+            pass
+        prepared = prepare_masked_input(
+            payload,
+            [turn.quoted_content] if turn.quoted_content else [],
+            vault=prior_vault,
+        )
+        state_input["messages"] = [prepared.message]
+        state_input["pii_vault"] = prepared.vault
+        return state_input
+
+    @staticmethod
+    def _normalize_emergency(turn: AgentTurnInput) -> AgentTurnInput:
+        if turn.emergency_detected or turn.state.money_sent is True:
+            return turn
+        from middleware import detect_money_sent
+
+        if detect_money_sent(turn.user_statement):
+            return turn.model_copy(update={"emergency_detected": True})
+        return turn
 
     def _invoke_once(
         self,
@@ -171,36 +281,23 @@ class UnHookAgent:
         turn: AgentTurnInput,
         thread_id: str,
     ) -> tuple[ScamAssessment, dict[str, Any]]:
-        payload = build_turn_payload(
-            user_statement=turn.user_statement,
-            quoted_content=turn.quoted_content,
-            state=turn.state,
-            tool_results=turn.tool_results,
-            age_group=turn.age_group,
-        )
         graph = self._graph(model, turn)
-        state_input = {
-            "messages": [HumanMessage(content=payload)],
-            **turn.state.model_dump(),
-            "tool_results": turn.tool_results,
-        }
+        config = self._config(thread_id, model_name, self.settings.recursion_limit)
+        state_input = self._state_input(graph, turn, config)
         result = graph.invoke(
             state_input,
-            config={
-                "configurable": {"thread_id": thread_id},
-                "recursion_limit": self.settings.recursion_limit,
-                "tags": ["unhook", model_name],
-            },
+            config=config,
             context=UnHookRuntimeContext(
                 user_id=turn.user_id,
                 age_group=turn.age_group,  # type: ignore[arg-type]
             ),
         )
-        assessment = ScamAssessment.model_validate(result["structured_response"])
+        assessment = _assessment_from_result(result)
         return assessment, result
 
     def invoke(self, turn: AgentTurnInput) -> AgentRunResult:
         """Run one user turn and optionally escalate once to the review model."""
+        turn = self._normalize_emergency(turn)
         before = self.policy.before_call(
             user_statement=turn.user_statement,
             quoted_content=turn.quoted_content,
@@ -236,6 +333,7 @@ class UnHookAgent:
             assessment.confidence,
             turn.state,
             emergency_detected=turn.emergency_detected,
+            output_audit_failed=_output_audit_failed(raw),
         )
         if not after.use_review_model:
             return AgentRunResult(
@@ -270,6 +368,7 @@ class UnHookAgent:
 
     async def ainvoke(self, turn: AgentTurnInput) -> AgentRunResult:
         """Async equivalent of invoke for FastAPI integration."""
+        turn = self._normalize_emergency(turn)
         before = self.policy.before_call(
             user_statement=turn.user_statement,
             quoted_content=turn.quoted_content,
@@ -287,34 +386,22 @@ class UnHookAgent:
             if before.use_review_model
             else turn.thread_id
         )
-        payload = build_turn_payload(
-            user_statement=turn.user_statement,
-            quoted_content=turn.quoted_content,
-            state=turn.state,
-            tool_results=turn.tool_results,
-            age_group=turn.age_group,
-        )
-        result = await self._graph(chosen_model, turn).ainvoke(
-            {
-                "messages": [HumanMessage(content=payload)],
-                **turn.state.model_dump(),
-                "tool_results": turn.tool_results,
-            },
-            config={
-                "configurable": {"thread_id": chosen_thread},
-                "recursion_limit": self.settings.recursion_limit,
-                "tags": ["unhook", chosen_name],
-            },
+        graph = self._graph(chosen_model, turn)
+        config = self._config(chosen_thread, chosen_name, self.settings.recursion_limit)
+        result = await graph.ainvoke(
+            self._state_input(graph, turn, config),
+            config=config,
             context=UnHookRuntimeContext(
                 user_id=turn.user_id,
                 age_group=turn.age_group,  # type: ignore[arg-type]
             ),
         )
-        assessment = ScamAssessment.model_validate(result["structured_response"])
+        assessment = _assessment_from_result(result)
         after = self.policy.after_nano(
             assessment.confidence,
             turn.state,
             emergency_detected=turn.emergency_detected,
+            output_audit_failed=_output_audit_failed(result),
         )
         if before.use_review_model or not after.use_review_model:
             return AgentRunResult(
@@ -333,33 +420,21 @@ class UnHookAgent:
                 }
             }
         )
-        review_payload = build_turn_payload(
-            user_statement=review_turn.user_statement,
-            quoted_content=review_turn.quoted_content,
-            state=review_turn.state,
-            tool_results=review_turn.tool_results,
-            age_group=review_turn.age_group,
+        review_thread = f"{turn.thread_id}:review:{turn.conversation_turns}"
+        review_graph = self._graph(self.review_model, review_turn)
+        review_config = self._config(
+            review_thread, self.settings.review_model, self.settings.recursion_limit
         )
-        review_result = await self._graph(self.review_model, review_turn).ainvoke(
-            {
-                "messages": [HumanMessage(content=review_payload)],
-                **review_turn.state.model_dump(),
-                "tool_results": review_turn.tool_results,
-            },
-            config={
-                "configurable": {
-                    "thread_id": f"{turn.thread_id}:review:{turn.conversation_turns}"
-                },
-                "recursion_limit": self.settings.recursion_limit,
-                "tags": ["unhook", self.settings.review_model],
-            },
+        review_result = await review_graph.ainvoke(
+            self._state_input(review_graph, review_turn, review_config),
+            config=review_config,
             context=UnHookRuntimeContext(
                 user_id=turn.user_id,
                 age_group=turn.age_group,  # type: ignore[arg-type]
             ),
         )
         return AgentRunResult(
-            assessment=ScamAssessment.model_validate(review_result["structured_response"]),
+            assessment=_assessment_from_result(review_result),
             model_used=self.settings.review_model,
             escalated=True,
             escalation_reasons=after.reasons,
@@ -369,8 +444,8 @@ class UnHookAgent:
 
 def build_unhook_agent(
     *,
-    tools: Sequence[AgentTool] = (),
-    middleware: Sequence[AgentMiddleware[Any, Any]] = (),
+    tools: Sequence[AgentTool] | None = None,
+    middleware: Sequence[AgentMiddleware[Any, Any]] | None = None,
     settings: AgentSettings | None = None,
     checkpointer: Any | None = None,
     store: Any | None = None,

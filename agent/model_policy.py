@@ -69,9 +69,12 @@ class ModelEscalationPolicy:
         confidence: float,
         state: StateSnapshot,
         emergency_detected: bool = False,
+        output_audit_failed: bool = False,
     ) -> EscalationDecision:
         if emergency_detected or state.money_sent is True:
             return EscalationDecision(False, ("money_sent: review model escalation suppressed",))
+        if output_audit_failed:
+            return EscalationDecision(True, ("output_audit_failed",))
         if confidence < self.confidence_threshold:
             return EscalationDecision(True, (f"confidence<{self.confidence_threshold}",))
         return EscalationDecision(False)

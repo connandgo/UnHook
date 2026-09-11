@@ -10,7 +10,14 @@ from schemas import ScamAssessment as SharedScamAssessment
 from state import RuntimeContext, UnHookState as SharedUnHookState, create_initial_state
 
 from agent.config import AgentSettings
-from agent.core import AgentTurnInput, UnHookAgent, select_tools
+from agent.core import (
+    AgentTurnInput,
+    UnHookAgent,
+    _assessment_from_result,
+    _output_audit_failed,
+    build_unhook_agent,
+    select_tools,
+)
 from agent.model_policy import ModelEscalationPolicy
 from agent.prompts import build_turn_payload
 from agent.schemas import ActionStep, DamageFlags, ScamAssessment, StateSnapshot
@@ -209,6 +216,149 @@ def test_openai_function_tool_name_is_recognized():
         emergency_detected=True,
     )
     assert select_tools(tools, turn) == [tools[1]]
+
+
+def test_repository_tools_are_connected_by_default():
+    agent = build_unhook_agent(settings=AgentSettings(api_key="test-placeholder"))
+
+    assert [tool.name for tool in agent.tools] == [
+        "check_url_risk",
+        "verify_caller_number",
+        "get_scam_playbook",
+        "report_to_authority",
+    ]
+
+    turn = AgentTurnInput(thread_id="t1", user_id="u1")
+    assert [tool.name for tool in select_tools(agent.tools, turn)] == [
+        "check_url_risk",
+        "verify_caller_number",
+        "get_scam_playbook",
+    ]
+
+
+def test_repository_middleware_are_connected_by_default():
+    agent = build_unhook_agent(settings=AgentSettings(api_key="test-placeholder"))
+
+    names = [getattr(item, "__name__", type(item).__name__) for item in agent.middleware]
+    assert names == [
+        "PIIMiddleware",
+        "OutputAuditMiddleware",
+        "emergency_route_notice",
+        "TopicFilterMiddleware",
+        "InjectionGuardMiddleware",
+        "emergency_route_detect",
+        "memory_inject_lookup",
+        "damage_state_middleware",
+        "emergency_route_restrict",
+        "memory_inject_prompt",
+        "ContentIsolationMiddleware",
+        "HumanInTheLoopMiddleware",
+        "ToolRetryMiddleware",
+    ]
+    assert agent.guarded_input is True
+
+
+def test_graph_limit_covers_full_middleware_path():
+    settings = AgentSettings(api_key="test-placeholder")
+    agent = build_unhook_agent(settings=settings)
+    graph = agent._graph(
+        agent.nano_model,
+        AgentTurnInput(thread_id="compile", user_id="u1"),
+    )
+
+    assert settings.recursion_limit >= len(graph.nodes)
+    assert settings.model_call_limit == 4
+    assert settings.tool_call_limit == 6
+
+
+def test_review_model_budget_includes_reasoning_and_structured_output():
+    settings = AgentSettings(api_key="test-placeholder")
+    assert settings.review_max_output_tokens == 4096
+    agent = build_unhook_agent(settings=settings)
+    assert agent.review_model.max_tokens == 4096
+
+
+def test_explicit_empty_middleware_disables_guarded_input():
+    agent = build_unhook_agent(
+        settings=AgentSettings(api_key="test-placeholder"),
+        middleware=(),
+    )
+    assert agent.middleware == ()
+    assert agent.guarded_input is False
+
+
+def test_guarded_input_masks_pii_before_checkpoint_input():
+    agent = build_unhook_agent(settings=AgentSettings(api_key="test-placeholder"))
+
+    class Snapshot:
+        values = {"pii_vault": {}}
+
+    class Graph:
+        @staticmethod
+        def get_state(config):
+            return Snapshot()
+
+    turn = AgentTurnInput(
+        thread_id="t1",
+        user_id="u1",
+        user_statement="문자를 받았어요",
+        quoted_content="010-1234-5678에서 연락이 왔어요",
+    )
+    state_input = agent._state_input(Graph(), turn, {"configurable": {"thread_id": "t1"}})
+
+    message = state_input["messages"][0]
+    assert "010-1234-5678" not in message.content
+    assert "<SCAM_PHONE_1>" in message.content
+    assert state_input["pii_vault"] == {"<SCAM_PHONE_1>": "010-1234-5678"}
+
+
+def test_explicit_empty_tools_disables_default_loading():
+    agent = build_unhook_agent(
+        settings=AgentSettings(api_key="test-placeholder"),
+        tools=(),
+    )
+    assert agent.tools == ()
+
+
+def test_missing_structured_response_has_clear_error():
+    class Message:
+        tool_calls = [{"name": "check_url_risk"}]
+
+    with pytest.raises(RuntimeError, match="check_url_risk"):
+        _assessment_from_result(
+            {"structured_response": None, "messages": [Message()]}
+        )
+
+
+def test_output_audit_failure_signal_is_read_from_messages():
+    from langchain_core.messages import AIMessage
+
+    assert _output_audit_failed({
+        "messages": [AIMessage(content="", response_metadata={
+            "unhook_audit": {"changed": True, "failed": True, "issues": ["schema_invalid"]}
+        })]
+    })
+
+
+def test_same_turn_output_audit_failure_escalates_after_nano():
+    policy = ModelEscalationPolicy(0.7)
+    decision = policy.after_nano(
+        0.95,
+        StateSnapshot(),
+        output_audit_failed=True,
+    )
+    assert decision.use_review_model
+    assert decision.reasons == ("output_audit_failed",)
+
+
+def test_current_input_money_sent_is_normalized_to_emergency():
+    turn = AgentTurnInput(
+        thread_id="t1",
+        user_id="u1",
+        user_statement="방금 50만원을 송금했어요",
+    )
+    normalized = UnHookAgent._normalize_emergency(turn)
+    assert normalized.emergency_detected is True
 
 
 def test_review_model_receives_nano_assessment():
