@@ -1,0 +1,15 @@
+# check_url_risk 로컬 블랙리스트 (설계서 2.5).
+# 설계서 1.5 기타에 따라 실제 피해 사례 대신 팀이 제작한 테스트 데이터를 사용한다.
+# KISA 피싱사이트 URL 공개 목록을 받으면 url 열 형식을 유지한 채 교체한다.
+url,scam_type,note
+vv-cj.top,smishing,4.2 TS-01 시나리오 도메인
+vv-cj.top/k2,smishing,4.2 TS-05 재방문 시나리오 경로
+cj-delivery.xyz,smishing,택배 사칭 유사 도메인
+hanjin-check.top,smishing,택배 사칭 유사 도메인
+epost-parcel.cc,smishing,우체국 사칭 유사 도메인
+kakao-login.icu,messenger_phishing,메신저 로그인 탈취 위장
+nhbank-secure.buzz,loan_scam,은행 사칭 대출 안내 위장
+toss-support.click,loan_scam,간편송금 사칭
+police-cyber.men,gov_impersonation,수사기관 사칭
+fss-notice.work,gov_impersonation,금융감독원 사칭
+invest-vip.link,investment_scam,투자 리딩방 유도
