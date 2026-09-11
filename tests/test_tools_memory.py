@@ -46,6 +46,7 @@ class CheckUrlRiskTests(unittest.TestCase):
     def test_ip_host_and_shortener_are_flagged(self):
         ip_result = tools.analyze_url("http://192.168.10.24/login")
         self.assertIn("IP 주소를 직접 사용", " ".join(ip_result["signals"]))
+        self.assertEqual(ip_result["risk_score"], tools._DECISIVE_SCORES["ip_host"])
 
         short_result = tools.analyze_url("https://bit.ly/3abcd")
         self.assertIn("단축 URL", " ".join(short_result["signals"]))
@@ -55,6 +56,47 @@ class CheckUrlRiskTests(unittest.TestCase):
         self.assertFalse(result["blacklisted"])
         self.assertEqual(result["risk_score"], 0)
         self.assertEqual(result["signals"], ["알려진 위험 신호 없음"])
+
+    def test_known_legit_domains_are_not_flagged(self):
+        """정식 도메인을 사칭으로 잡으면 안 된다.
+
+        브랜드 부분 문자열 매칭은 cjlogistics.com(CJ대한통운 정식 도메인)과
+        kakaostory.com을 유사 도메인으로 잡았다. is_known_legit()이 앞에서 거른다.
+        """
+        for url in (
+            "https://www.cjlogistics.com", "https://kakaostory.com",
+            "https://story.kakao.com", "https://obank.kbstar.com",
+            "https://www.cj.co.kr", "https://www.police.go.kr",
+            "https://govtech.io", "https://toss.im", "https://blog.naver.com",
+        ):
+            with self.subTest(url=url):
+                result = tools.analyze_url(url)
+                self.assertEqual(result["risk_score"], 0)
+                self.assertEqual(result["signals"], ["알려진 위험 신호 없음"])
+
+    def test_decisive_signals_outrank_cumulative_ones(self):
+        """단독으로 확정인 신호는 보강 신호 합계보다 높게 나와야 한다.
+
+        @ 위장은 실제 접속지를 바꾸는 기법인데, 단순 합산에서는 .top 하나(20)와
+        비슷한 20점이었다.
+        """
+        at_sign = tools.analyze_url("http://www.kbstar.com@evil.ru/login")
+        self.assertEqual(at_sign["risk_score"], tools._DECISIVE_SCORES["at_sign"])
+
+        weak = tools.analyze_url("http://unknown-site.top/ab")
+        self.assertLess(weak["risk_score"], at_sign["risk_score"])
+
+    def test_brand_in_subdomain_is_detected(self):
+        """kakao.com.evil.ru처럼 브랜드를 하위 도메인에 넣은 위장을 잡는다."""
+        result = tools.analyze_url("http://kakao.com.evil.ru/login")
+        self.assertIn("유사 도메인", " ".join(result["signals"]))
+        self.assertGreater(result["risk_score"], 0)
+
+    def test_shortener_is_reported_as_unverifiable(self):
+        """단축 URL은 위험이 아니라 목적지 확인 불가다 (설계서 1.5 안정성)."""
+        result = tools.analyze_url("https://bit.ly/3xK9p")
+        self.assertIn("확인 불가", " ".join(result["signals"]))
+        self.assertLess(result["risk_score"], 50)
 
     def test_risk_score_never_exceeds_100(self):
         result = tools.analyze_url("http://vv-cj.top/x@evil")
