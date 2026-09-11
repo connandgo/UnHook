@@ -292,12 +292,14 @@ class ActionStep(BaseModel):
 
 | 항목 | 내용 |
 |---|---|
-| 문서 출처 | 금융감독원(보이스피싱 지킴이 대응 요령, 지급정지·피해환급 절차 등), KISA(스미싱·피싱 대응 안내, 118 신고 절차 등) 공개 문서 |
-| 전처리 | 문서를 절차 단위로 청킹하고 각 청크에 `scam_type`·`damage_stage`·출처·URL 메타데이터 부여 |
-| 검색 | `scam_type`·`damage_stage`로 메타데이터 필터 후 유사도 검색, 상위 k개 청크에서 `steps`·`contacts` 구성 |
-| 폴백 | 검색 실패·임계치 미달 시 로컬 JSON의 공통 기본 절차와 신고 기관 연락처 반환 |
-| 사전 로딩 | 1.5 성능 원칙에 따라 벡터 스토어는 세션 시작 시 1회 적재·캐싱 (Colab 단일 세션 기준) |
-| 미정 | 임베딩 모델·벡터 스토어 선택, 청크 크기, 유사도 임계치, 수집 문서 목록 — 담당자(노윤성) 확정 필요 |
+| 문서 출처 | 금융감독원(보이스피싱 지킴이 대응 요령, 지급정지 신청·피해금 환급 절차, 개인정보노출자 사고예방시스템 등록), KISA(118 스미싱·피싱 대응 안내, 악성앱 삭제), 경찰청(사이버범죄 신고시스템 접수 절차) 공개 문서. `data/playbook_docs/`에 **출처별 원문 파일 1개씩** 두며, 1.5 기타 원칙에 따라 실제 개인정보가 없는 공개 안내문·팀 정리본만 사용 |
+| 전처리 | 출처별 원문을 **절차(step) 단위로 청킹**한다. 같은 `scam_type`·`damage_stage` 조합에 여러 출처의 청크가 공존해야 유사도 검색이 실제로 선택을 수행한다(조합당 문서 1개면 dict 조회와 같다). 청크 메타데이터: `step_key`(섹션 제목, checklist 키와 동일한 짧은 이름, 예: `지급정지 요청`), `scam_types`(적용 유형 목록, 전 유형 공통이면 `any`), `damage_stages`(적용 단계 목록 — 한 절차가 여러 단계에 걸칠 수 있음), `contacts`(연락처 `id` 목록), `source`, `url`. 안내 순서는 청크에 적지 않고 `data/playbook_fallback.json`의 `step_order[damage_stage]`(단계별 `step_key` 전체 순서표) 한 곳에서 관리한다 — 출처마다 숫자를 맞출 필요가 없고 동률이 생기지 않는다 |
+| 벡터 스토어·임베딩 | `langchain_core.vectorstores.InMemoryVectorStore` + OpenAI `text-embedding-3-small`(`timeout=10`, `max_retries=2`, 키는 `OPENAI_API_KEY` 재사용). 근거: Colab 단일 세션·문서 수백 건 이하에서 추가 의존성 없이 코사인 점수를 직접 반환하고 callable 필터가 선필터로 동작함. FAISS(langchain-community)는 sunset 경고와 `fetch_k` 후필터·relevance score 범위 문제가 있어 채택하지 않음 |
+| 검색 | 쿼리는 `scam_type`·`damage_stage`를 한국어로 풀고 행동 동사(차단·삭제·확인·신고·지급정지·변경)를 열거한 문장 — "대응 절차와 신고 기관"처럼 신고에 치우친 문구는 실측에서 기기 위생 단계의 점수를 떨어뜨렸다. 필터는 3단계로 완화한다: ① `scam_type` 일치(또는 `any`) + `damage_stage` 일치 → ② `damage_stage` 일치 + 전 유형 공통(`any`) 청크만(다른 유형 전용 설명을 섞지 않기 위해) → ③ 폴백 JSON. `scam_type="unknown"`은 ②부터 시작. 각 단계에서 코사인 유사도 `PLAYBOOK_SCORE_THRESHOLD`(0.25 — `text-embedding-3-small` 실측: 필터 통과 청크 최저 0.257·중앙값 0.41, 필터 밖 중앙값 0.37. 관련성은 메타데이터 필터가 가르고 임계치는 깨진 결과를 거르는 안전망) 미만은 버린다. 후보는 넉넉히(20건) 가져와 같은 `step_key`는 최고 점수 1건만 남기고 최대 `k=5`건으로 자르며, **최종 순서는 유사도가 아니라 `step_order[damage_stage]`로 정렬**한다(4.2 TS-02-C003의 "지급정지 → 112 → 개인정보노출자 등록" 순서가 임베딩 노이즈에 흔들리지 않게). 유형 필터가 무관한 절차를 걸러내므로 단계별 전역 순서 하나로 충분하다. `steps`는 최대 5건(`ScamAssessment.immediate_actions` 상한과 동일) |
+| 출력 형식 | `steps` 각 항목은 `"<step_key> — <설명>"` 형식이다. 앞부분 `step_key`는 3.1 `checklist` 키와 동일하며 폴백 JSON도 같은 형식·같은 키를 쓴다. `contacts`는 청크·폴백이 참조한 `id`를 `data/contacts.json`의 `label`로 바꿔 내보내므로 테이블에 없는 값이 나올 수 없다(4.2 "연락처가 연락처 테이블과 일치") |
+| 폴백 | 검색 결과 없음·임계치 미달·인덱스 미적재·임베딩 API 실패·예외 등 모든 실패에서 `data/playbook_fallback.json`의 `damage_stage`별 공통 절차 + `data/contacts.json` 연락처를 반환한다. `search_playbook`은 **예외를 밖으로 내지 않는다**(`tools.py`의 `get_scam_playbook`이 예외를 잡지 않으므로) |
+| 사전 로딩 | 1.5 성능 원칙에 따라 앱 시작 시 `load_playbook_index()`를 1회 호출해 모듈 전역에 캐싱한다. 호출 없이 `search_playbook`이 먼저 불리면 그 시점에 1회 적재하고, 적재 실패 시 폴백으로 동작한다. 테스트는 `load_playbook_index(embeddings=...)`로 가짜 임베딩을 주입해 API 키 없이 실행한다 |
+| 담당자 확정 필요 | `playbook_fallback.json`의 `step_keys`(정규 이름 16종)와 `step_order`는 `DamageStateMiddleware`의 checklist 키·순서와 같아야 하므로 작업 묶음 2와 확정 |
 
 #### Tool 간 호출 순서 의존성
 
@@ -468,15 +470,16 @@ flowchart TD
 | `audit.py` | 출력 검증, 단정 표현 및 근거 검사 | 4 | 구현 |
 | `tools.py` | URL 및 번호 조회, 모의 신고 Tool, RAG Tool 연결 | 5 | 구현 |
 | `memory.py` | Store의 과거 신고 이력 저장·조회·대조, `MemoryInjectMiddleware`가 호출 | 5 | 구현 |
-| `rag.py` | 대응 절차 문서 적재 및 검색 | 6 | 구현 예정 |
+| `rag.py` | 대응 절차 문서 청킹·적재·검색, `load_playbook_index()`·`search_playbook()` | 6 | 구현 |
 | `data/kisa_urls.csv` | URL 검사 데이터 | 5 | 테스트 데이터로 구현, 공개 목록 확보 시 교체 |
-| `data/contacts.json`, `data/playbook_fallback.json`, `data/playbook_docs/` | 공식 연락처, 검색 실패 시 기본 절차, 검색 원문 | 6 | 준비 예정 |
+| `data/contacts.json`, `data/playbook_fallback.json`, `data/playbook_docs/` | 연락처 테이블(`id`→`label`), `step_keys`·`step_order`·`damage_stage`별 기본 절차, 출처별 원문 4건(YAML 헤더 + `## step_key` 단위 본문, 청크 31개) | 6 | 준비 완료 |
 | `app.py` | 시연 화면 및 대화 실행/승인 연결 | 통합 | 구현 예정 |
 | `.env.example` | API 키 이름과 빈 값만 기재, 현재 `OPENAI_API_KEY`·`FSS_FINLIFE_API_KEY` 포함 | 통합 | 기본 템플릿 구현 |
 | `requirements.txt` | 공통 코드 및 보안 판별 모델 실행 의존성 | 공통 | 구현 |
 | `tests/test_contracts.py` | 공유 계약 및 State 연결 검증 | 통합 | 구현 |
 | `tests/test_tools_memory.py` | Tool 판정·재시도 규약, 이력 대조·PII 미저장 검증 | 5 | 구현 |
 | `tests/test_guards.py` | 3개 사용자 흐름, 보안 경계 및 실패 경로 검증 | 3 | 구현, 모의 모델 사용 |
+| `tests/test_rag.py` | 데이터 정합성(출처 2개 이상), 필터 3단계·`step_order` 정렬·폴백·예외 미발생·contacts 대조, Tool 연결 (가짜 임베딩) | 6 | 구현 |
 
 ### 공유 코드 사용 규칙
 
@@ -488,7 +491,8 @@ flowchart TD
   여러 메시지 입력, 복합 유형, 근거 충돌, 감사 실패 조건과 긴급 분기의 승격 억제는
   Agent/Middleware에서 별도로 구현한다. 설정 파일 자체는 모델 선택을 수행하지 않는다.
   nano 판별기는 `DEFAULT_MODEL_TIMEOUT_SECONDS=20`, `DEFAULT_MODEL_MAX_OUTPUT_TOKENS=800`을 사용한다.
-  입력 준비 한도는 `GUARD_MAX_INPUT_CHARS=12000`이다. 전체 Agent 호출 상한, 외부 Tool 재시도와 RAG 설정은 담당자 확정 후 추가한다.
+  입력 준비 한도는 `GUARD_MAX_INPUT_CHARS=12000`이다. 전체 Agent 호출 상한, 외부 Tool 재시도는 담당자 확정 후 추가한다.
+  RAG 설정(임베딩 모델명, 임계치, k)은 `config.py`가 아니라 `rag.py` 상단 상수로 둔다(2.5 RAG 구성).
 - `.env.example`은 키 이름을 공유하는 템플릿이다. 실제 키는 환경변수로 전달하며,
   `config.py`는 파일 탐색, `.env` 자동 로딩 또는 API 호출을 수행하지 않는다.
   추가 외부 API 환경변수 이름은 해당 담당자가 확정한다.
@@ -523,12 +527,37 @@ flowchart TD
   `LOOKUP_TOOL_NAMES`(`check_url_risk`, `verify_caller_number`)를 사용한다.
   판정부는 Tool과 분리해 `analyze_url()`, `verify_number()`로 두었으므로 네트워크 없이
   단독 호출·테스트할 수 있다.
+- `check_url_risk`의 `risk_score`는 신호를 두 부류로 나눠 산출한다.
+  단독으로 확정에 가까운 **결정적 신호**(`blacklist` 100, `at_sign` 90, `punycode` 60,
+  `ip_host` 55)는 하한선을 세우고, 혼자서는 의심에 그치는 **보강 신호**(`lookalike` 25,
+  `suspicious_tld` 20, `shortener` 15, `short_path` 10)는 누적한다.
+  `risk_score = min(max(결정적 하한, 보강 합계), 100)`.
+  단순 합산을 쓰지 않는 이유는 두 가지다. 같은 스미싱 킷에서 한 세트로 나오는
+  신호(`.top` + 유사 도메인 + 단축 경로)를 여러 번 세게 되고, 실제 접속지를 바꾸는
+  `@` 위장이 `.top` 하나와 같은 무게가 되기 때문이다.
+  점수가 100에 포화해도 `signals`에는 탐지된 근거를 모두 남긴다(2.4 evidence 최소 1개).
+- 유사 도메인 판정은 `_LEGIT_DOMAINS` 화이트리스트를 먼저 본다. 브랜드 부분 문자열
+  매칭만으로는 `cjlogistics.com`(CJ대한통운 정식 도메인)·`kakaostory.com`을 사칭으로
+  잡는다. 화이트리스트를 통과하지 못한 호스트는 최상위 TLD를 제외한 전체에서 브랜드를
+  찾으므로 `kakao.com.evil.ru`처럼 하위 도메인에 브랜드를 넣은 위장도 탐지된다.
+  브랜드·정상 도메인 목록 확장은 `tools.py` 상단 상수만 수정하면 된다.
+- `risk_score`는 `risk_level`이 아니다. 2.4의 `risk_level`은 `DamageStateMiddleware`가
+  피해 단계와 함께 산출하며, `risk_score`는 그 판단에 들어가는 근거 중 하나다.
 - `verify_caller_number`의 인증키 환경변수는 `FSS_FINLIFE_API_KEY`로 확정한다.
   키가 없거나 조회가 `FINLIFE_MAX_ATTEMPTS`회 실패하면 `is_official=None`을 돌려주며,
   이 값을 `unverified`에 기록하는 것은 호출부의 책임이다.
 - `get_scam_playbook`은 `tools.py`에 Tool로 등록하되 실제 검색은 `rag.py`(작업 묶음 6)의
   `search_playbook(scam_type, damage_stage) -> PlaybookResult`에 위임한다. `rag.py`가 아직
   없으면 빈 결과를 돌려주고 추측으로 채우지 않는다.
+- `rag.py`(작업 묶음 6)는 `load_playbook_index(embeddings=None, force=False) -> None`과
+  `search_playbook(scam_type, damage_stage) -> PlaybookResult`를 내보낸다. `search_playbook`은
+  어떤 실패에서도 예외를 내지 않고 폴백 JSON으로 `PlaybookResult`를 채워 돌려준다.
+  `steps` 항목은 `"<step_key> — <설명>"` 형식이며, `DamageStateMiddleware`(작업 묶음 2)는
+  `" — "` 앞부분을 checklist 키로 쓴다. 임베딩 API 키는 `OPENAI_API_KEY`를 재사용하므로
+  `.env.example`에 추가 변수는 없다. 의존성 `pyyaml`을 `requirements.txt`에 추가했다(`langchain-openai`는 이미 공통 의존성).
+  보조 함수 `is_index_loaded()`, `reset_index()`(테스트용), `load_playbook_documents()`(검증용)를 함께 내보낸다.
+  `rag.py`가 생기면서 `tests/test_tools_memory.py`의 "rag.py 부재 시 빈 결과" 테스트는 전제가 사라져 삭제했다.
+  `tools.py`의 `except ImportError` 분기도 같은 이유로 죽은 코드가 됐으므로 작업 묶음 5와 정리 여부를 합의한다.
 - `memory.py`는 전화번호를 `hash_identifier()`로 해시해 저장하고 숫자 원문은 보관하지 않는다
   (1.5 보안). 문구 비교용 정규화는 6자리 이상 숫자열을 제거하므로 번호가 문구 채널로
   노출되지 않는다. 표시용 마스킹 값은 이번 입력에서 만들고 Store에서 꺼내지 않는다.
@@ -545,7 +574,7 @@ flowchart TD
   `text -> bool` 형태의 nano 판별 함수를 넘긴다(둘 다 선택).
 - 보안 클래스 구현은 `guards.py`, `pii.py`, `audit.py`에서 담당하고,
   `middleware.py`에서 조립해 `agent.py`로 전달한다. 함수명과 생성자 계약은 각 구현 착수 시 합의한다.
-  RAG 모델, 벡터 스토어, 이력 대조 임계치 등 기존 미정 사항은 아직 확정하지 않았다.
+  이력 대조 임계치 등 기존 미정 사항은 아직 확정하지 않았다(RAG 구성은 2.5에서 확정).
 
 ### 5.1 입력 보안 연결 계약
 
@@ -628,3 +657,5 @@ URL 검사는 `urllib.parse`로 경로·쿼리의 검사 사본만 한 번 디�
 | 2026-09-11 | 잔여 불일치 정리 — 2.4에 `damage_flags`(`DamageFlags`)·`ActionStep` 정의 추가, 3.1에 `checklist`·`pii_vault`·`incident_report` State 추가 및 `info_exposed`로 개명, `channel`을 State로 통일, `EmergencyRoute`의 `jump_to="end"` 즉시 종료를 제거하고 `before_agent`(조회 Tool 비활성화) + `after_agent`(첫 줄 고정)로 재정의, 4.2 TS-04-C001 Tool 호출 조건 정정 |
 | 2026-09-11 | 작업 묶음 5 구현 — `tools.py`(Tool 4종, 판정부 분리), `memory.py`(Store 이력 저장·대조, 전화번호 해시화), `data/kisa_urls.csv` 테스트 데이터, `tests/test_tools_memory.py`. `FSS_FINLIFE_API_KEY` 환경변수명 확정, 5절에 묶음 5 공유 계약 추가 |
 | 2026-09-11 | 작업 묶음 4 구현 — `pii.py`(주민번호·카드 마스킹, 사기범 계좌·전화번호 토큰화, Tool 인자 토큰 복원), `audit.py`(G5 단정·안심 표현 완화, G6 판정 보류, 출력 PII 가림, 질문 1개 제한, 스키마 실패 시 안전 응답). 3.2 `PIIMiddleware`를 Custom·`before_agent`+`before_model`+`wrap_tool_call`로 변경하고 `after_model` 역순 실행에 따른 등록 순서 명시, 3.3 G4·G5 판별 방식 갱신, 5절 공유 계약 추가 |
+| 2026-09-11 | `check_url_risk` 점수 산출을 단순 합산에서 결정적 신호 하한 + 보강 신호 누적 구조로 변경하고 5절에 규칙 명시. 유사 도메인 판정에 정상 도메인 화이트리스트를 도입해 정식 도메인 오탐을 제거하고, 브랜드 비교 범위를 호스트 전체로 넓혀 하위 도메인 위장을 탐지 |
+| 2026-09-11 | 2.5 `get_scam_playbook` RAG 구성 확정(작업 묶음 6) — 벡터 스토어 `InMemoryVectorStore`·임베딩 `text-embedding-3-small`, 출처별 원문을 step 단위로 청킹하고 `step_key`·`scam_types`·`damage_stages` 메타데이터 부여, 필터 3단계 완화(유형+단계 → 단계 → 폴백)와 `step_order` 표 정렬, `steps` 형식 `"<step_key> — <설명>"`, `search_playbook` 무예외 원칙, `load_playbook_index()` 사전 로딩. 5절에 묶음 6 공유 계약과 `tests/test_rag.py` 추가. `data/contacts.json`·`playbook_fallback.json`·`playbook_docs/`(금감원 2·KISA 1·경찰청 1, 청크 31개) 준비, `rag.py`·`tests/test_rag.py` 구현, `requirements.txt`에 `pyyaml` 추가(`langchain-openai`는 main에 이미 있음) |

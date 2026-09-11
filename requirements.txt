@@ -4,3 +4,6 @@ langchain-openai==1.6.2
 langgraph==1.2.11
 pydantic==2.13.5
 typing_extensions==4.16.0
+
+# RAG (rag.py, 작업 묶음 6)
+pyyaml==6.0.3

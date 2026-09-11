@@ -36,16 +36,31 @@ FINLIFE_ENDPOINT = "https://finlife.fss.or.kr/finlifeapi/companySearch.json"
 # 환경변수 이름은 설계서 5절에 따라 이 파일의 담당자가 확정한다.
 FINLIFE_API_KEY_ENV = "FSS_FINLIFE_API_KEY"
 
-# check_url_risk 위험 신호 가중치. 합계는 0~100으로 자른다.
-_SIGNAL_SCORES = {
-    "blacklist": 100,
-    "ip_host": 40,
-    "suspicious_tld": 25,
-    "shortener": 20,
+# check_url_risk 위험 신호 가중치.
+#
+# 신호를 두 부류로 나눈다. 전부 더하기만 하면 서로 독립이 아닌 신호(같은 스미싱
+# 킷에서 한 세트로 나오는 .top + 유사 도메인 + 단축 경로)를 여러 번 세게 되고,
+# 단독으로 확정인 신호(@ 위장)가 보강 신호보다 낮게 나온다.
+#
+# 결정적 신호는 하한선을 세우고, 보강 신호는 누적한다.
+#   risk_score = min(max(결정적 하한, 보강 합계), 100)
+
+# 단독으로 확정에 가까운 신호. 정상 사용 사례가 거의 없다.
+_DECISIVE_SCORES = {
+    "blacklist": 100,  # KISA 등록 = 확인된 사실
+    "at_sign": 90,     # 브라우저가 @ 앞을 무시해 실제 접속지를 숨긴다
+    "punycode": 60,    # 유니코드 위장. 문자 링크에 정상 사용 사례가 없다
+    "ip_host": 55,     # 정상 기관은 문자에 IP 주소를 보내지 않는다
+}
+
+# 혼자서는 "의심"에 그치고, 누적될 때 의미가 생기는 신호.
+_CUMULATIVE_SCORES = {
     "lookalike": 25,
+    "suspicious_tld": 20,
+    # 단축 URL은 위험한 것이 아니라 목적지를 판단할 수 없는 것이다.
+    # 정상 기업도 쓰므로 낮게 두고, signals에 확인 불가를 명시한다 (설계서 1.5 안정성).
+    "shortener": 15,
     "short_path": 10,
-    "punycode": 30,
-    "at_sign": 20,
 }
 
 # 설계서 1.3 S1: 비정상 TLD. 실습 범위에서 자주 쓰이는 목록만 둔다.
@@ -64,8 +79,24 @@ _LOOKALIKE_BRANDS = {
     "kakao": "카카오", "naver": "네이버", "kbstar": "국민은행",
     "shinhan": "신한은행", "wooribank": "우리은행", "hanabank": "하나은행",
     "nonghyup": "농협", "nhbank": "농협", "toss": "토스",
-    "police": "경찰청", "gov": "정부기관", "fss": "금융감독원",
+    "police": "경찰청", "fss": "금융감독원",
 }
+# 유사 도메인 판정 전에 거르는 알려진 정상 도메인.
+# 브랜드 부분 문자열 매칭은 정식 도메인도 사칭으로 잡는다 (cjlogistics.com,
+# kakaostory.com). 하위 도메인까지 함께 허용한다 (obank.kbstar.com).
+_LEGIT_DOMAINS = {
+    "cj.co.kr", "cjlogistics.com", "doortodoor.co.kr",
+    "lotteglogis.com", "hanjin.co.kr", "hanjin.com",
+    "epost.go.kr", "koreapost.go.kr",
+    "kakao.com", "kakaostory.com", "kakaocorp.com", "daum.net",
+    "naver.com", "navercorp.com",
+    "kbstar.com", "kbfg.com", "shinhan.com", "shinhansec.com",
+    "wooribank.com", "hanabank.com", "kebhana.com",
+    "nonghyup.com", "nhbank.com", "banking.nonghyup.com",
+    "toss.im", "tossbank.com",
+    "gov.kr", "police.go.kr", "fss.or.kr", "kisa.or.kr", "spo.go.kr",
+}
+
 _LEGIT_SUFFIXES = (
     ".co.kr", ".go.kr", ".or.kr", ".ac.kr", ".re.kr", ".com", ".net", ".kr",
 )
@@ -130,72 +161,98 @@ def _split_url(raw: str) -> tuple[str, str]:
     return host, parsed.path or ""
 
 
-def _registrable_label(host: str) -> str:
-    """도메인에서 브랜드 비교에 쓸 라벨을 뽑는다 (vv-cj.top -> vvcj)."""
-    for suffix in _LEGIT_SUFFIXES:
-        if host.endswith(suffix):
-            host = host[: -len(suffix)]
-            break
-    else:
-        host = host.rsplit(".", 1)[0]
-    label = host.rsplit(".", 1)[-1]
-    return re.sub(r"[^a-z0-9]", "", label)
+def is_known_legit(host: str) -> bool:
+    """알려진 정상 도메인인지 본다. 하위 도메인도 허용한다.
+
+    접미사 비교라 `kakao.com.evil.ru` 같은 위장은 통과하지 못한다.
+    """
+    return any(host == d or host.endswith(f".{d}") for d in _LEGIT_DOMAINS)
+
+
+def _brand_search_text(host: str) -> str:
+    """브랜드 비교용 문자열. 최상위 TLD만 떼고 나머지 전체를 이어 붙인다.
+
+    호스트 전체를 보는 이유는 `kakao.com.evil.ru`처럼 브랜드를 하위 도메인에
+    넣어 사용자를 속이는 형태를 잡기 위해서다. 마지막 라벨만 보면 `evil`만 남아
+    놓친다. 정식 도메인은 `is_known_legit()`이 앞에서 걸러낸다.
+
+        vv-cj.top         -> vvcj
+        kakao.com.evil.ru -> kakaocomevil
+    """
+    trimmed = host.rsplit(".", 1)[0] if "." in host else host
+    return re.sub(r"[^a-z0-9]", "", trimmed)
 
 
 def analyze_url(url: str) -> URLRiskResult:
-    """check_url_risk의 순수 판정부. Tool 없이 단독 테스트할 수 있다."""
+    """check_url_risk의 순수 판정부. Tool 없이 단독 테스트할 수 있다.
+
+    결정적 신호는 하한선을, 보강 신호는 누적 합계를 만들고 둘 중 큰 값을 쓴다.
+    점수가 포화해도 signals에는 탐지된 근거를 모두 남긴다 (설계서 2.4 evidence).
+    """
     host, path = _split_url(url)
     if not host:
         # 설계서 2.5: 형식 불명 URL이면 risk_score=0, signals=["형식 불명"].
         return URLRiskResult(blacklisted=False, risk_score=0, signals=["형식 불명"])
 
     signals: list[str] = []
-    score = 0
+    decisive = 0
+    cumulative = 0
+
+    def hit_decisive(key: str, message: str) -> None:
+        nonlocal decisive
+        signals.append(message)
+        decisive = max(decisive, _DECISIVE_SCORES[key])
+
+    def hit_cumulative(key: str, message: str) -> None:
+        nonlocal cumulative
+        signals.append(message)
+        cumulative += _CUMULATIVE_SCORES[key]
 
     blacklist = load_blacklist()
     blacklisted = host in blacklist
     if blacklisted:
-        signals.append("KISA 피싱사이트 목록에 등록된 주소")
-        score += _SIGNAL_SCORES["blacklist"]
+        hit_decisive("blacklist", "KISA 피싱사이트 목록에 등록된 주소")
+
+    if "@" in url:
+        hit_decisive("at_sign", "주소에 @ 포함 (실제 접속지가 @ 뒤 주소로 바뀜)")
+
+    if host.startswith("xn--") or ".xn--" in host:
+        hit_decisive("punycode", "퓨니코드 도메인 (한글·유니코드 위장 가능)")
 
     if _IPV4_HOST_RE.match(host):
-        signals.append("도메인 대신 IP 주소를 직접 사용")
-        score += _SIGNAL_SCORES["ip_host"]
+        hit_decisive("ip_host", "도메인 대신 IP 주소를 직접 사용")
 
     tld = host.rsplit(".", 1)[-1]
     if tld in _SUSPICIOUS_TLDS:
-        signals.append(f"비정상 TLD .{tld}")
-        score += _SIGNAL_SCORES["suspicious_tld"]
+        hit_cumulative("suspicious_tld", f"비정상 TLD .{tld}")
 
     if host in _SHORTENER_HOSTS:
-        signals.append("단축 URL 서비스 도메인")
-        score += _SIGNAL_SCORES["shortener"]
+        hit_cumulative(
+            "shortener", "단축 URL 서비스 도메인 (실제 목적지 확인 불가)"
+        )
 
-    label = _registrable_label(host)
-    for brand, korean in _LOOKALIKE_BRANDS.items():
-        if brand and brand in label and label != brand:
-            signals.append(f"{korean} 유사 도메인 (정식 도메인 아님)")
-            score += _SIGNAL_SCORES["lookalike"]
-            break
-
-    if host.startswith("xn--") or ".xn--" in host:
-        signals.append("퓨니코드 도메인 (한글·유니코드 위장 가능)")
-        score += _SIGNAL_SCORES["punycode"]
-
-    if "@" in url:
-        signals.append("주소에 @ 포함 (실제 접속지 위장 가능)")
-        score += _SIGNAL_SCORES["at_sign"]
+    # 알려진 정상 도메인은 브랜드 부분 문자열 매칭에서 제외한다.
+    # cjlogistics.com은 CJ대한통운의 정식 도메인이지 사칭이 아니다.
+    if not is_known_legit(host):
+        label = _brand_search_text(host)
+        for brand, korean in _LOOKALIKE_BRANDS.items():
+            if brand and brand in label and label != brand:
+                hit_cumulative(
+                    "lookalike", f"{korean} 유사 도메인 (정식 도메인 아님)"
+                )
+                break
 
     trimmed = path.strip("/")
     if trimmed and len(trimmed) <= 3 and "/" not in trimmed:
-        signals.append("단축형 경로")
-        score += _SIGNAL_SCORES["short_path"]
+        hit_cumulative("short_path", "단축형 경로")
 
     if not signals:
         signals.append("알려진 위험 신호 없음")
 
     return URLRiskResult(
-        blacklisted=blacklisted, risk_score=min(score, 100), signals=signals
+        blacklisted=blacklisted,
+        risk_score=min(max(decisive, cumulative), 100),
+        signals=signals,
     )
 
 
