@@ -69,6 +69,7 @@ UnHook/
     |-- test_contracts.py      공통 스키마 및 State 연결 검증
     |-- test_tools_memory.py   Tool 및 이력 메모리 검증 (5)
     |-- test_guards.py         입력 보안 3개 흐름 및 연결·오류 검증
+    |-- test_pii_audit.py      개인정보 마스킹·출력 감사 연결 검증 (4)
     `-- test_rag.py            RAG 검색·정렬·폴백 검증 (6)
 ```
 
