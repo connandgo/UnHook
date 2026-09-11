@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import os
 import uuid
@@ -16,7 +17,6 @@ from langchain_core.messages import ToolMessage
 from agent import AgentRunResult, AgentTurnInput, StateSnapshot, build_unhook_agent
 
 REPORT_APPROVAL_STATEMENT = "신고 접수를 승인합니다. report_to_authority로 접수해 주세요."
-RISK_ICON = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢", "insufficient_info": "⚪"}
 RISK_LABEL = {
     "critical": "매우 위험", "high": "위험", "medium": "주의", "low": "낮음", "insufficient_info": "정보 부족",
 }
@@ -25,16 +25,31 @@ RISK_COLOR = {
     "critical": "#F4212E", "high": "#E0245E", "medium": "#F7B928", "low": "#00B87A", "insufficient_info": "#72767A",
 }
 RISK_TEXT = {"medium": "#0F1419"}  # 노란 배경은 흰 글자가 안 보여 어두운 글자를 쓴다.
+SCAM_LABEL = {
+    "smishing": "스미싱(문자 사기)", "voice_phishing": "보이스피싱", "messenger_phishing": "메신저 피싱",
+    "loan_scam": "대출 사기", "gov_impersonation": "기관 사칭", "investment_scam": "투자 사기", "unknown": "유형 미확정",
+}
 STAGE_STEPS = [
     ("none", "피해 없음"), ("link_clicked", "링크 클릭"), ("info_exposed", "정보 노출"),
     ("app_installed", "앱 설치"), ("money_sent", "송금"),
 ]
+QUICK_STARTS = [
+    "택배 문자에 있는 링크를 눌렀어요",
+    "모르는 번호가 앱을 설치하라고 해요",
+    "이미 돈을 보냈어요, 어떡하죠?",
+]
+GREETING = (
+    "안녕하세요, Un Hook입니다. 의심스러운 문자나 전화를 받으셨나요?\n\n"
+    "지금 상황을 편하게 말해 주세요. 얼마나 위험한지, 지금 당장 무엇을 해야 하는지 알려드릴게요. "
+    "받은 문자가 있으면 아래 **📎 받은 문자 붙여넣기**로 원문을 함께 보내 주세요."
+)
 DEFAULT_USER_ID = "demo-user"
 DEFAULT_AGE_GROUP = "general"
+ASSISTANT_AVATAR = "🪝"
 
 
 def inject_theme_css() -> None:
-    """config.toml이 못 미치는 세부(채팅 말풍선·폼·확장 패널)를 같은 팔레트로 맞춘다.
+    """config.toml이 못 미치는 세부(말풍선·단계 레일·할 일 카드)를 같은 팔레트로 맞춘다.
 
     Streamlit이 .stApp에 color-scheme을 붙이므로 light-dark()로 라이트·다크 값을 고르면
     테마를 바꿔도 스크립트 재실행 없이 바로 따라간다.
@@ -42,49 +57,129 @@ def inject_theme_css() -> None:
     st.markdown(
         """
         <style>
+        /* 한글 본문용 폰트. config.toml의 font는 URL을 하나만 받으므로 여기서 불러온다. */
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;600;700&display=swap');
         :root {
+          --uh-fg: light-dark(#0F1419, #E7E9EA);
           --uh-card: light-dark(#F7F8F8, #17181C);
           --uh-border: light-dark(#E1EAEF, #242628);
           --uh-primary: light-dark(#1E9DF1, #1C9CF0);
           --uh-accent: light-dark(#E3ECF6, #061622);
+          --uh-muted: light-dark(#E5E5E6, #2A2C30);
           --uh-muted-fg: #72767A;
           --uh-radius: 1.3rem;
         }
-        [data-testid="stChatMessage"] {
-          background: var(--uh-card);
-          border: 1px solid var(--uh-border);
-          border-radius: var(--uh-radius);
-          padding: 1rem 1.25rem;
-        }
+        /* 본문 폭: 채팅 열 하나에 집중한다. */
+        .block-container { max-width: 52rem; padding-top: 3.5rem; padding-bottom: 2rem; }
+        [data-testid="stBottomBlockContainer"] { max-width: 52rem; padding-top: 0.5rem; padding-bottom: 1.25rem; }
+        /* 사용자 말풍선: 오른쪽 정렬 + accent. 어시스턴트는 배경 없이 본문처럼. */
+        [data-testid="stChatMessage"] { padding: 0.5rem 0; background: transparent; }
         [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+          flex-direction: row-reverse;
+          margin-left: 18%;
+        }
+        [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageContent"] {
           background: var(--uh-accent);
-          border-color: transparent;
+          border-radius: var(--uh-radius) 0.4rem var(--uh-radius) var(--uh-radius);
+          padding: 0.8rem 1.1rem;
         }
-        [data-testid="stForm"] {
-          background: var(--uh-card);
-          border: 1px solid var(--uh-border);
-          border-radius: var(--uh-radius);
-          padding: 1.25rem 1.25rem 1rem;
+        [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageAvatarUser"] {
+          background: var(--uh-primary); color: #fff;
         }
-        [data-testid="stExpander"] details {
-          border-radius: calc(var(--uh-radius) - 4px);
-          border-color: var(--uh-border);
+        [data-testid="stChatMessage"] [data-testid="stCodeBlock"] pre { font-size: 0.85rem; }
+        /* 상단 사건 상태 줄: 위험도 배지 + 피해 단계 레일 (이 화면의 서명 요소) */
+        .uh-case {
+          display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+          padding: 0.9rem 1.1rem; margin-bottom: 0.8rem;
+          background: var(--uh-card); border: 1px solid var(--uh-border); border-radius: var(--uh-radius);
         }
-        .uh-risk-card {
-          border-radius: var(--uh-radius);
-          padding: 16px 18px;
-          margin-bottom: 14px;
+        .uh-verdict {
+          display: inline-flex; align-items: center; gap: 0.4rem; white-space: nowrap;
+          padding: 0.35rem 0.85rem; border-radius: 999px; font-weight: 700; font-size: 0.95rem;
+          background: var(--uh-risk); color: var(--uh-risk-text, #fff);
         }
-        .uh-risk-card .uh-risk-label { font-size: 0.8rem; opacity: 0.85; }
-        .uh-risk-card .uh-risk-value { font-size: 1.6rem; font-weight: 700; line-height: 1.2; }
-        .uh-stages { line-height: 1.9; margin-bottom: 12px; }
-        .uh-stage-done, .uh-stage-todo, .uh-unknown { color: var(--uh-muted-fg); }
-        .uh-stage-todo { opacity: 0.7; }
-        .uh-section { color: var(--uh-muted-fg); font-size: 0.78rem; font-weight: 600;
-          letter-spacing: 0.04em; text-transform: uppercase; margin: 10px 0 4px; }
+        .uh-rail { display: flex; flex: 1 1 18rem; align-items: center; min-width: 0; }
+        .uh-rail-step {
+          position: relative; flex: 1; text-align: center; font-size: 0.74rem; color: var(--uh-muted-fg);
+          padding-top: 1rem; white-space: nowrap;
+        }
+        .uh-rail-step::before {
+          content: ""; position: absolute; top: 0.3rem; left: 50%; width: 0.6rem; height: 0.6rem;
+          transform: translateX(-50%); border-radius: 50%;
+          background: var(--uh-muted); border: 2px solid var(--uh-border); box-sizing: border-box;
+        }
+        .uh-rail-step:not(:first-child)::after {
+          content: ""; position: absolute; top: 0.52rem; right: 50%; width: 100%; height: 2px;
+          background: var(--uh-border);
+        }
+        .uh-rail-step.done { color: var(--uh-fg); }
+        .uh-rail-step.done::before { background: var(--uh-risk); border-color: var(--uh-risk); }
+        .uh-rail-step.done::after { background: var(--uh-risk); }
+        .uh-rail-step.now { color: var(--uh-risk); font-weight: 700; }
+        .uh-rail-step.now::before {
+          background: var(--uh-risk); border-color: var(--uh-risk);
+          box-shadow: 0 0 0 4px color-mix(in srgb, var(--uh-risk) 22%, transparent);
+        }
+        .uh-rail-step.now::after { background: var(--uh-risk); }
+        /* 어시스턴트 답변 안의 요소 */
+        .uh-answer-head { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin: 0.1rem 0 0.7rem; }
+        .uh-answer-head .uh-verdict { font-size: 0.85rem; padding: 0.25rem 0.7rem; }
+        .uh-answer-meta { color: var(--uh-muted-fg); font-size: 0.85rem; }
+        .uh-h { font-weight: 700; font-size: 0.95rem; margin: 0.9rem 0 0.45rem; }
+        .uh-steps { display: flex; flex-direction: column; gap: 0.45rem; }
+        .uh-step {
+          display: flex; gap: 0.75rem; align-items: flex-start;
+          background: var(--uh-card); border: 1px solid var(--uh-border);
+          border-radius: calc(var(--uh-radius) - 6px); padding: 0.7rem 0.9rem;
+        }
+        .uh-step-n {
+          flex: none; width: 1.6rem; height: 1.6rem; border-radius: 50%; display: grid; place-items: center;
+          background: var(--uh-risk); color: var(--uh-risk-text, #fff); font-weight: 700; font-size: 0.8rem;
+        }
+        .uh-step-body { line-height: 1.5; }
+        .uh-step-contact {
+          display: inline-block; margin-top: 0.25rem; padding: 0.1rem 0.55rem; border-radius: 999px;
+          background: var(--uh-accent); color: var(--uh-primary); font-size: 0.8rem; font-weight: 600;
+        }
+        .uh-ask { margin: 1rem 0 0.2rem; font-size: 1.02rem; line-height: 1.55; }
+        .uh-quiet { color: var(--uh-muted-fg); font-size: 0.85rem; }
+        /* 사이드바: 사건 기록 */
+        [data-testid="stSidebar"] .uh-section {
+          color: var(--uh-muted-fg); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em;
+          text-transform: uppercase; margin: 1rem 0 0.4rem;
+        }
+        .uh-fact { display: flex; justify-content: space-between; align-items: center; padding: 0.3rem 0; font-size: 0.9rem; }
+        .uh-fact + .uh-fact { border-top: 1px solid var(--uh-border); }
+        .uh-tag { padding: 0.1rem 0.6rem; border-radius: 999px; font-size: 0.78rem; font-weight: 600; }
+        .uh-tag.bad { background: color-mix(in srgb, #F4212E 14%, transparent); color: #F4212E; }
+        .uh-tag.ok { background: color-mix(in srgb, #00B87A 16%, transparent); color: #00B87A; }
+        .uh-tag.na { background: var(--uh-muted); color: var(--uh-muted-fg); }
+        .uh-check { display: flex; gap: 0.5rem; align-items: center; padding: 0.2rem 0; font-size: 0.9rem; }
+        .uh-check.done { color: var(--uh-muted-fg); text-decoration: line-through; }
+        /* 하단 입력 줄 */
+        [data-testid="stBottom"] > div { background: transparent; }
+        [data-testid="stChatInput"] { border-radius: var(--uh-radius); }
+        [data-testid="stPopoverBody"] { width: min(34rem, 92vw); }
+        @media (prefers-reduced-motion: no-preference) {
+          [data-testid="stChatMessage"] { animation: uh-in 0.25s ease-out; }
+          @keyframes uh-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+        }
         </style>
         """,
         unsafe_allow_html=True,
+    )
+
+
+def risk_vars(risk_level: str) -> str:
+    """위험도 색을 CSS 변수로 넘기는 inline style 문자열."""
+    color = RISK_COLOR.get(risk_level, RISK_COLOR["insufficient_info"])
+    text = RISK_TEXT.get(risk_level, "#FFFFFF")
+    return f"--uh-risk:{color};--uh-risk-text:{text};"
+
+
+def verdict_html(risk_level: str) -> str:
+    return (
+        f"<span class='uh-verdict'>{html.escape(RISK_LABEL.get(risk_level, risk_level))}</span>"
     )
 
 
@@ -139,40 +234,6 @@ def collect_tool_activity(raw_state: dict[str, Any], seen: set[str]) -> list[str
     return lines
 
 
-def render_assessment(entry: dict[str, Any]) -> None:
-    a = entry["assessment"]
-    st.markdown(
-        f"**{RISK_ICON.get(a['risk_level'], '⚪')} 위험도 `{a['risk_level']}` · 유형 `{a['scam_type']}` · "
-        f"피해 단계 `{a['damage_stage']}` · 신뢰도 {a['confidence']:.2f}**"
-    )
-    if a.get("injection_detected"):
-        st.warning("입력 안의 지시문 공격 신호가 감지되었습니다.")
-    if a["immediate_actions"]:
-        st.markdown("**지금 할 일**")
-        for step in a["immediate_actions"]:
-            contact = f" — {step['contact']}" if step.get("contact") else ""
-            st.markdown(f"{step['priority']}. {step['action']}{contact}")
-    if a["evidence"]:
-        st.markdown("**판단 근거**")
-        for item in a["evidence"]:
-            st.markdown(f"- {item}")
-    if a["unverified"]:
-        st.markdown("**확인 필요**")
-        for item in a["unverified"]:
-            st.markdown(f"- {item}")
-    if a.get("next_question"):
-        st.info(f"❓ {a['next_question']}")
-    with st.expander("실행 정보", expanded=False):
-        model_line = f"모델: `{entry['model_used']}`"
-        if entry["escalated"]:
-            model_line += f" (재검토: {', '.join(entry['escalation_reasons'])})"
-        st.markdown(model_line)
-        for line in entry["tool_lines"]:
-            st.markdown(line)
-        if not entry["tool_lines"]:
-            st.caption("Tool 호출 없음")
-
-
 def run_turn(statement: str, quoted: str, *, report_approved: bool = False) -> None:
     agent = get_agent()
     turn = AgentTurnInput(
@@ -218,85 +279,146 @@ def run_turn(statement: str, quoted: str, *, report_approved: bool = False) -> N
 
 
 # ── 화면 ────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Un Hook", page_icon="🪝", layout="wide")
+st.set_page_config(page_title="Un Hook", page_icon="🪝", layout="centered")
 
 if "thread_id" not in st.session_state:
     reset_conversation()
+# 문자 원문 첨부는 전송 후 비운다. 위젯이 그려지기 전에만 값을 바꿀 수 있어 플래그로 미룬다.
+if st.session_state.pop("clear_quoted_draft", False):
+    st.session_state.quoted_draft = ""
 
 inject_theme_css()
 
-def render_state_panel(snap: StateSnapshot) -> None:
-    """현재 피해 상태를 한눈에 보이게 그린다."""
-    color = RISK_COLOR.get(snap.risk_level, RISK_COLOR["insufficient_info"])
-    text = RISK_TEXT.get(snap.risk_level, "#FFFFFF")
+
+def render_case_strip(snap: StateSnapshot) -> None:
+    """현재 위험도 배지와 피해 단계 레일. 대화 위에 항상 보인다."""
+    current = next((i for i, (key, _) in enumerate(STAGE_STEPS) if key == snap.damage_stage), 0)
+    steps = []
+    for i, (_, label) in enumerate(STAGE_STEPS):
+        cls = "now" if i == current else "done" if i < current else ""
+        steps.append(f"<div class='uh-rail-step {cls}'>{label}</div>")
     st.markdown(
-        f"""
-        <div class="uh-risk-card" style="background:{color};color:{text};">
-          <div class="uh-risk-label">현재 위험도</div>
-          <div class="uh-risk-value">
-            {RISK_ICON.get(snap.risk_level, "⚪")} {RISK_LABEL.get(snap.risk_level, snap.risk_level)}
-          </div>
-        </div>
-        """,
+        f"<div class='uh-case' style='{risk_vars(snap.risk_level)}'>"
+        f"{verdict_html(snap.risk_level)}<div class='uh-rail'>{''.join(steps)}</div></div>",
         unsafe_allow_html=True,
     )
 
-    st.markdown("<div class='uh-section'>피해 단계</div>", unsafe_allow_html=True)
-    current = next((i for i, (key, _) in enumerate(STAGE_STEPS) if key == snap.damage_stage), 0)
-    rows = []
-    for i, (_, label) in enumerate(STAGE_STEPS):
-        if i == current:
-            rows.append(f"<div style='font-weight:700;color:{color};'>▶ {label}</div>")
-        elif i < current:
-            rows.append(f"<div class='uh-stage-done'>✓ {label}</div>")
-        else:
-            rows.append(f"<div class='uh-stage-todo'>○ {label}</div>")
-    st.markdown("<div class='uh-stages'>" + "".join(rows) + "</div>", unsafe_allow_html=True)
 
+def render_assessment(entry: dict[str, Any]) -> None:
+    a = entry["assessment"]
+    style = risk_vars(a["risk_level"])
+    scam = SCAM_LABEL.get(a["scam_type"], a["scam_type"])
+    st.markdown(
+        f"<div class='uh-answer-head' style='{style}'>{verdict_html(a['risk_level'])}"
+        f"<span class='uh-answer-meta'>{html.escape(scam)} · 확신 {a['confidence'] * 100:.0f}%</span></div>",
+        unsafe_allow_html=True,
+    )
+    if a.get("injection_detected"):
+        st.warning("보내주신 문자 안에 상담 결과를 조작하려는 문구가 있었습니다. 그 지시는 무시하고 판단했습니다.")
+    if a["immediate_actions"]:
+        cards = []
+        for step in a["immediate_actions"]:
+            contact = (
+                f"<span class='uh-step-contact'>☎ {html.escape(str(step['contact']))}</span>"
+                if step.get("contact") else ""
+            )
+            cards.append(
+                f"<div class='uh-step'><span class='uh-step-n'>{step['priority']}</span>"
+                f"<div class='uh-step-body'>{html.escape(step['action'])}{contact}</div></div>"
+            )
+        st.markdown(
+            f"<div class='uh-h'>지금 바로 할 일</div><div class='uh-steps' style='{style}'>{''.join(cards)}</div>",
+            unsafe_allow_html=True,
+        )
+    if a.get("next_question"):
+        st.markdown(f"<p class='uh-ask'>{html.escape(a['next_question'])}</p>", unsafe_allow_html=True)
+    with st.expander("왜 이렇게 판단했나요?"):
+        st.markdown("**판단 근거**")
+        for item in a["evidence"]:
+            st.markdown(f"- {item}")
+        if a["unverified"]:
+            st.markdown("**아직 확인되지 않은 것**")
+            for item in a["unverified"]:
+                st.markdown(f"- {item}")
+    with st.expander("실행 정보"):
+        model_line = f"모델: `{entry['model_used']}`"
+        if entry["escalated"]:
+            model_line += f" (재검토: {', '.join(entry['escalation_reasons'])})"
+        st.markdown(model_line)
+        for line in entry["tool_lines"]:
+            st.markdown(line)
+        if not entry["tool_lines"]:
+            st.caption("Tool 호출 없음")
+
+
+def render_case_file(snap: StateSnapshot) -> None:
+    """사이드바: 대화에서 확인된 사실과 대응 진행 상황."""
     st.markdown("<div class='uh-section'>확인된 사실</div>", unsafe_allow_html=True)
-    flags = [
-        ("링크 클릭", snap.link_clicked),
-        ("앱 설치", snap.app_installed),
-        ("송금", snap.money_sent),
-    ]
-    for label, value in flags:
+    rows = []
+    for label, value in (("링크 클릭", snap.link_clicked), ("앱 설치", snap.app_installed), ("송금", snap.money_sent)):
         if value is True:
-            st.markdown(f"🔴 {label} **있음**")
+            tag = "<span class='uh-tag bad'>있음</span>"
         elif value is False:
-            st.markdown(f"🟢 {label} 없음")
+            tag = "<span class='uh-tag ok'>없음</span>"
         else:
-            st.markdown(f"<span class='uh-unknown'>➖ {label} 미확인</span>", unsafe_allow_html=True)
+            tag = "<span class='uh-tag na'>미확인</span>"
+        rows.append(f"<div class='uh-fact'><span>{label}</span>{tag}</div>")
     if snap.info_exposed:
-        st.markdown("🔴 노출 정보: **" + ", ".join(snap.info_exposed) + "**")
+        exposed = html.escape(", ".join(snap.info_exposed))
+        rows.append(f"<div class='uh-fact'><span>노출 정보</span><span class='uh-tag bad'>{exposed}</span></div>")
     if snap.sent_amount:
-        st.markdown(f"💸 송금액 **{snap.sent_amount:,}원**")
+        rows.append(f"<div class='uh-fact'><span>송금액</span><b>{snap.sent_amount:,}원</b></div>")
     if snap.elapsed_minutes is not None:
-        st.markdown(f"⏱ 송금 후 **{snap.elapsed_minutes}분** 경과")
+        rows.append(f"<div class='uh-fact'><span>송금 후 경과</span><b>{snap.elapsed_minutes}분</b></div>")
+    st.markdown("".join(rows), unsafe_allow_html=True)
 
     if snap.checklist:
-        st.markdown("<div class='uh-section'>대응 체크리스트</div>", unsafe_allow_html=True)
+        st.markdown("<div class='uh-section'>대응 진행</div>", unsafe_allow_html=True)
         done = sum(1 for v in snap.checklist.values() if v)
         st.progress(done / len(snap.checklist), text=f"{done}/{len(snap.checklist)} 완료")
-        for key, ok in snap.checklist.items():
-            st.markdown(f"{'✅' if ok else '⬜'} {key}")
+        items = [
+            f"<div class='uh-check {'done' if ok else ''}'><span>{'✅' if ok else '⬜'}</span><span>{html.escape(key)}</span></div>"
+            for key, ok in snap.checklist.items()
+        ]
+        st.markdown("".join(items), unsafe_allow_html=True)
 
+
+snapshot = StateSnapshot.model_validate(st.session_state.snapshot)
 
 with st.sidebar:
     st.title("🪝 Un Hook")
     st.caption("금융사기 피해 상태 확인·대응 안내 Agent")
-    if st.button("새 대화 시작", use_container_width=True):
+    if st.button("새 상담 시작", width="stretch"):
         reset_conversation()
         st.rerun()
-    st.divider()
-    render_state_panel(StateSnapshot.model_validate(st.session_state.snapshot))
-    st.divider()
-    st.caption(f"{st.session_state.turn_count}턴 · thread `{st.session_state.thread_id}`")
+    render_case_file(snapshot)
+
+    # 신고 접수(HITL): 사용자가 버튼을 눌러야만 report_approved=True로 Tool이 모델에 제공된다.
+    if st.session_state.history and not st.session_state.report_done:
+        st.markdown("<div class='uh-section'>신고</div>", unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown("지금까지 확인된 내용으로 신고를 접수할 수 있어요. 버튼을 누르기 전에는 접수되지 않습니다.")
+            if st.button("신고 접수하기", type="primary", width="stretch"):
+                run_turn(REPORT_APPROVAL_STATEMENT, "", report_approved=True)
+                st.rerun()
+    elif st.session_state.report_done:
+        st.success("신고가 접수되었습니다. 접수 번호는 답변의 실행 정보에서 확인하세요.")
+    st.caption(f"{st.session_state.turn_count}턴 · `{st.session_state.thread_id}`")
 
 if not os.getenv("OPENAI_API_KEY"):
     st.error("OPENAI_API_KEY 환경변수가 없습니다. 설정 후 다시 실행하세요.")
     st.stop()
 
-st.header("금융사기 상담")
+render_case_strip(snapshot)
+
+quick_pick: str | None = None
+if not st.session_state.history:
+    with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
+        st.markdown(GREETING)
+        st.markdown("<p class='uh-quiet'>이런 상황이면 눌러서 바로 시작하세요.</p>", unsafe_allow_html=True)
+        for col, text in zip(st.columns(len(QUICK_STARTS)), QUICK_STARTS):
+            if col.button(text, width="stretch"):
+                quick_pick = text
 
 for entry in st.session_state.history:
     if entry["role"] == "user":
@@ -305,35 +427,29 @@ for entry in st.session_state.history:
             if entry["quoted"]:
                 st.code(entry["quoted"], language=None)
     elif entry["role"] == "assistant":
-        with st.chat_message("assistant"):
+        with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
             render_assessment(entry)
     else:
-        with st.chat_message("assistant"):
-            st.error(f"실행 오류: {entry['text']}")
+        with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
+            st.error(f"답변을 만들지 못했습니다. {entry['text']}")
 
-with st.form("turn_form", clear_on_submit=True):
-    statement = st.text_input("내 상황 / 질문", placeholder="예: 링크는 눌렀는데 송금은 안 했어요")
-    quoted = st.text_area(
-        "받은 문자·통화 원문 (없으면 비워두세요)", height=100,
-        placeholder="예: [택배] 주소 불일치로 반송. 아래 링크에서 확인하세요 http://...",
-    )
-    submitted = st.form_submit_button("보내기", type="primary", use_container_width=True)
+# 하단 고정 입력 줄: 문자 원문 첨부(팝오버) + 채팅 입력.
+# 사용자 진술과 외부 원문을 분리해 넘기기 위해 원문은 별도 칸에 받는다 (AGENTS.md 입력 보안 연결).
+with st.bottom:
+    attach_col, hint_col = st.columns([1.2, 2.8], vertical_alignment="center")
+    has_draft = bool(st.session_state.get("quoted_draft", "").strip())
+    with attach_col.popover("📎 문자 원문 첨부됨 · 수정" if has_draft else "📎 받은 문자 붙여넣기", width="stretch"):
+        st.text_area(
+            "받은 문자·통화 내용을 그대로 붙여넣어 주세요", key="quoted_draft", height=150,
+            placeholder="예: [택배] 주소 불일치로 반송. 아래 링크에서 확인하세요 http://...",
+        )
+        st.caption("전화번호·계좌번호 같은 개인정보는 보내기 전에 자동으로 가려집니다.")
+    if has_draft:
+        hint_col.markdown("<span class='uh-quiet'>첨부한 원문은 다음 메시지와 함께 전송됩니다.</span>", unsafe_allow_html=True)
+    statement = st.chat_input("지금 상황을 말해 주세요 (예: 링크는 눌렀는데 송금은 안 했어요)")
 
-if submitted:
-    if not statement.strip():
-        st.warning("내 상황 / 질문을 입력하세요.")
-    else:
-        run_turn(statement.strip(), quoted.strip())
-        st.rerun()
-
-# 신고 접수(HITL): 사용자가 버튼을 눌러야만 report_approved=True로 Tool이 모델에 제공된다.
-if st.session_state.history and not st.session_state.report_done:
-    st.divider()
-    with st.container(border=True):
-        col1, col2 = st.columns([3, 1], vertical_alignment="center")
-        col1.markdown("**신고 접수** — 버튼을 누르기 전에는 신고 Tool이 실행되지 않습니다.")
-        if col2.button("신고 접수 승인", type="secondary", use_container_width=True):
-            run_turn(REPORT_APPROVAL_STATEMENT, "", report_approved=True)
-            st.rerun()
-elif st.session_state.report_done:
-    st.success("신고 접수가 완료되었습니다. 접수 결과는 위 실행 정보에서 확인하세요.")
+statement = (statement or quick_pick or "").strip()
+if statement:
+    run_turn(statement, st.session_state.get("quoted_draft", "").strip())
+    st.session_state.clear_quoted_draft = True
+    st.rerun()

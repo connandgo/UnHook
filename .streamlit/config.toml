@@ -1,6 +1,6 @@
 # Un Hook 화면 테마. 라이트·다크 팔레트는 디자인 토큰(globals.css)과 동일하게 맞춘다.
 [theme]
-font = "Open Sans:https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap, sans-serif"
+font = "Open Sans:https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap, Noto Sans KR, sans-serif"
 codeFont = "Menlo, monospace"
 baseRadius = "1.3rem"
 buttonRadius = "1.3rem"
