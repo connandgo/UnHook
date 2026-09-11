@@ -5,10 +5,19 @@ assigns the derivation of `damage_stage` / `risk_level` and the prevention of
 regression to `DamageStateMiddleware`.
 """
 
-from langchain.agents.middleware import after_model
+import re
 
-from schemas import DamageFlags, DamageStage, RiskLevel, ScamAssessment
+from langchain.agents.middleware import (
+    after_agent,
+    after_model,
+    before_agent,
+    wrap_model_call,
+)
+from langchain_core.messages import HumanMessage
+
+from schemas import ActionStep, DamageFlags, DamageStage, RiskLevel, ScamAssessment
 from state import UnHookState
+from tools import LOOKUP_TOOL_NAMES
 
 RISK_ORDER: dict[RiskLevel, int] = {
     "insufficient_info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4,
@@ -131,3 +140,106 @@ def damage_state_middleware(state: UnHookState, runtime) -> dict | None:
         update["checklist"] = checklist
 
     return update
+
+
+GOLDEN_TIME_MINUTES = 30
+PAYMENT_STOP_ITEM = "지급정지 요청"
+MAX_ACTIONS = 5
+
+# 4.2 TS-02-C003이 immediate_actions[0]으로 기대하는 문구.
+PAYMENT_STOP_ACTION = "송금한 은행 콜센터에 즉시 전화해 지급정지 요청(다른 사람 휴대폰 사용)"
+
+# 완료형 표현만 본다. "송금하면 안 되나요?" 같은 질문까지 긴급으로 보면
+# 평범한 턴의 조회 Tool이 꺼져 TS-01이 깨진다.
+_MONEY_SENT_RE = re.compile(
+    r"보냈|부쳤|넘겼|송금\s*했|이체\s*했|입금\s*했|송금해\s*버|이체해\s*버"
+)
+
+
+def detect_money_sent(text: str) -> bool:
+    """입력에 이미 송금이 끝났다는 표현이 있는지 본다."""
+    return bool(_MONEY_SENT_RE.search(text))
+
+
+def _last_human_text(messages: list) -> str:
+    for message in reversed(messages or []):
+        if isinstance(message, HumanMessage) and isinstance(message.content, str):
+            return message.content
+    return ""
+
+
+def build_payment_stop_action(elapsed_minutes: int | None) -> str:
+    """경과 시간은 문구의 긴급도만 조절한다. 지급정지 안내 자체는 항상 나간다."""
+    if elapsed_minutes is None:
+        return PAYMENT_STOP_ACTION
+    if elapsed_minutes <= GOLDEN_TIME_MINUTES:
+        return f"{PAYMENT_STOP_ACTION} — 송금 후 {elapsed_minutes}분, 지급정지 골든타임입니다"
+    return f"{PAYMENT_STOP_ACTION} — {elapsed_minutes}분이 지났어도 반드시 신청하세요"
+
+
+@before_agent(state_schema=UnHookState)
+def emergency_route_detect(state: UnHookState, runtime) -> dict:
+    """이번 턴이 긴급 턴인지 판정해 표시만 남긴다.
+
+    Tool 목록은 `ModelRequest`에만 있고 `before_agent`는 State 갱신만 반환할 수
+    있으므로, 실제 Tool 차단은 `emergency_route_restrict`가 맡는다.
+    """
+    if state.get("money_sent"):
+        return {"emergency_mode": True}
+    return {"emergency_mode": detect_money_sent(_last_human_text(state.get("messages")))}
+
+
+@wrap_model_call(state_schema=UnHookState)
+def emergency_route_restrict(request, handler):
+    """긴급 턴에는 외부 조회 Tool을 빼고 모델을 호출한다.
+
+    이미 송금한 사용자에게 URL 검사·번호 조회를 돌리는 것은 지급정지
+    골든타임을 소모하는 행위다. 모델 호출 자체는 유지한다 — 사기 유형 판정과
+    `damage_flags` 추출은 모델만 할 수 있기 때문이다.
+
+    gpt-5 승격 억제도 같은 조건이지만 모델 선택은 `agent.py` 책임이므로,
+    승격 로직은 State의 `emergency_mode`를 확인해야 한다.
+    """
+    if request.state.get("emergency_mode"):
+        request.tools = [
+            tool for tool in request.tools
+            if getattr(tool, "name", None) not in LOOKUP_TOOL_NAMES
+        ]
+    return handler(request)
+
+
+@after_agent(state_schema=UnHookState)
+def emergency_route_notice(state: UnHookState, runtime) -> dict | None:
+    """지급정지가 아직이면 이를 1순위 조치로 고정한다.
+
+    구조화 출력을 쓰면 AIMessage 본문이 비어 있고 사용자에게 보이는 것은
+    `ScamAssessment`다. 따라서 설계서 3.2의 "응답 첫 줄 고정"은
+    `immediate_actions[0]` 삽입으로 구현한다 (4.2 TS-02-C003과 동일).
+    """
+    if not state.get("money_sent"):
+        return None
+    if (state.get("checklist") or {}).get(PAYMENT_STOP_ITEM):
+        return None
+
+    assessment: ScamAssessment | None = state.get("structured_response")
+    if assessment is None:
+        return None
+
+    actions = assessment.immediate_actions
+    if actions and actions[0].action.startswith(PAYMENT_STOP_ACTION):
+        return None
+
+    first = ActionStep(
+        priority=1,
+        action=build_payment_stop_action(state.get("elapsed_minutes")),
+        contact=None,  # TODO: data/contacts.json 확정 후 은행 콜센터 안내 연결
+    )
+    renumbered = [first] + [
+        action.model_copy(update={"priority": index})
+        for index, action in enumerate(actions, start=2)
+    ]
+    return {
+        "structured_response": assessment.model_copy(
+            update={"immediate_actions": renumbered[:MAX_ACTIONS]}
+        )
+    }

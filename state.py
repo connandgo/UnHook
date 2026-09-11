@@ -32,6 +32,7 @@ class UnHookState(AgentState[ScamAssessment], total=False):
     pii_vault: dict[str, str]
     incident_report: dict[str, Any] | None
     history_matches: list[dict[str, Any]]
+    emergency_mode: bool
 
 
 def create_initial_state() -> UnHookState:
@@ -52,4 +53,5 @@ def create_initial_state() -> UnHookState:
         "pii_vault": {},
         "incident_report": None,
         "history_matches": [],
+        "emergency_mode": False,
     }
